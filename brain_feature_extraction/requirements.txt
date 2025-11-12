@@ -1,0 +1,15 @@
+torch==2.5.1
+torchvision==0.16.1
+jupyter
+scikit-learn
+gitpython
+peewee
+fire
+psycopg2-binary
+pybtex
+tqdm
+transformers==4.30.2
+pillow
+brainio @ git+https://github.com/brain-score/brainio.git@main
+result_caching @ git+https://github.com/brain-score/result_caching.git@main
+brain-score @ git+https://github.com/brain-score/brain-score.git@main
