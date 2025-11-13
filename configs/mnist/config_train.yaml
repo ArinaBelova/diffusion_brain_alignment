@@ -1,7 +1,38 @@
-epochs: 10
+data:
+  data_name: mnist
+  data_root: './data'
 
 # need to wire up the model arguments' with UNet class definition
 model:
-  type: "UNet"
+  name: unet
   input_size: 28
   num_classes: 10
+  c_in: 1
+  c_out: 1
+  time_dim: 256
+  dropout_prob: 0.2
+  remove_deep_conv: false
+
+optim:
+  loss: mse
+  optim_name: adam
+  weight_decay: 1.e-3
+  lr: 1.e-4
+  scheduler_name: onecycle
+  max_lr: 1.e-4
+
+  # for plateau:
+  # min_lr: 1e-6
+  # scheduler_mode: "min"
+  # factor: 0.7
+  # patience: 50
+
+train:
+  epochs: 1000
+  image_size: 28
+  batch_size: 128
+  dataset_size: 60000
+
+validation:
+  eval_freq: 100
+  batch_size: 1 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?

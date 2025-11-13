@@ -3,13 +3,14 @@
 import torch
 import numpy as np
 from scipy.integrate import solve_ivp
+import torch.nn as nn
 from torch.distributions import MultivariateNormal
 
 # custom libs
 from abc import ABC, abstractmethod
-import torch.nn as nn
 import einops
 from collections.abc import Callable
+from typing import Tuple
 
 def get_diffusion(
     dynamics="ve",
@@ -114,6 +115,7 @@ def run_forward_sde(process: StandardDiffusion,
 
     # just a checking method to make sure that we have the respective reverse process to the forward process
 # for now specifically for VP process as I don't yet define the integral of VE process (it's 0???)
+@torch.inference_mode()
 def run_reverse_sde(f: Callable,
             g: Callable,
             x_0: np.ndarray,
@@ -124,23 +126,28 @@ def run_reverse_sde(f: Callable,
             n_steps: int = 1000,
             injected_noises = None,
             epsilon=1e-3,
+            guidance_scale: float = 1.0,
+            label: int = 0,
+            num_classes: int = 10,
+            device="cpu",
             # vp_process=True,
             **kwargs
-):
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Function to run reverse-time stochastic differential equation. We assume a deterministic initial Gaussian distribution p_T."""
     n_traj, dim_x = x_0.shape[0], x_0.shape[1:]
     # don't start with t = 0 to avoid division by zero in score function
-    time_grid = np.linspace(epsilon, T, n_steps) 
-    
+    time_grid = torch.linspace(T, epsilon, n_steps + 1, device=device)
+    dt = time_grid[1] - time_grid[0]
+
+    # When we thought the precision was the problem:
     # reverse_x_0 = reverse_x_0.astype(np.float64)
     # forward_x_0 = forward_x_0.astype(np.float64)
     # injected_noises = injected_noises.astype(np.float64)
     # time_grid = time_grid.astype(np.float64)
-    
-    # reverse the time grid for the reverse process, so dt is negative
-    time_grid = time_grid[::-1]  
-    dt = time_grid[1] - time_grid[0]
-
     x_traj = [x_0]
+    y_target = (label + torch.zeros(n_traj, 1)).long()
+    y_empty = num_classes + torch.zeros(n_traj, 1).long()
+
     for idx, t in enumerate(time_grid):
         x = x_traj[idx]
         t = time_grid[idx]
@@ -154,7 +161,7 @@ def run_reverse_sde(f: Callable,
         # elif vp_process == False:
         #     score = (forward_x_0 - x) / integral_ve(t)
 
-        z = torch.randn(size = (n_traj, *dim_x))
+        z = torch.randn(size = (n_traj, *dim_x)) # torch.randn_like(x)
         diffusivity_sample = g(x, t) * np.sqrt(np.abs(dt)) * z 
 
         next_step = x + determ_drift - g(x, t)**2 * score_fn(x, t) * dt + diffusivity_sample
