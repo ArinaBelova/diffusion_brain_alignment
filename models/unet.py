@@ -127,6 +127,8 @@ class Up(nn.Module):
 
     def forward(self, x, skip_x, t):
         x = self.up(x)
+        # print("x shape after upsample:", x.shape)
+        # print("skip_x shape:", skip_x.shape)
         x = torch.cat([skip_x, x], dim=1)
         x = self.conv(x)
         emb = self.emb_layer(t)[:, :, None, None].repeat(1, 1, x.shape[-2], x.shape[-1])
@@ -204,7 +206,9 @@ class UNet(nn.Module):
     
     def forward(self, x, t, y=None, apply_class_dropout=False):
         t = t.unsqueeze(-1)
+        #print("time embedding before pos encoding:", t)
         t = self.pos_encoding(t, self.time_dim)
+        #print("time embedding after pos encoding:", t[0,:]) # t[idx, :] is whithin 1 batch; t[:, idx] is one element from every batch 
 
         if self.conditional:
             y = self.label_emb(y, apply_class_dropout)

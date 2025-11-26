@@ -3,14 +3,17 @@ import torchvision
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 import numpy as np
-import diffusivity
+import utils.diffusivity as diffusivity
 
 def get_mnist_dataloader(args):
-    image_size = args.train.image_size if hasattr(args.train, 'image_size') else 28
+    #image_size = args.train.image_size if hasattr(args.train, 'image_size') else 32 #28
 
-    transform = transforms.Compose([transforms.Resize(image_size),\
-                                    transforms.ToTensor(),\
+    # do the additional padding to have 32x32 images for UNet digestion
+    # transforms.Resize(image_size),\
+    transform = transforms.Compose([transforms.ToTensor(),\
+                                    transforms.Pad(2),\
                                     transforms.Normalize([0.5],[0.5])]) #Normalize to -1,1
+    
     train_set = torchvision.datasets.MNIST(root=args.data.data_root, train=True,
                                         download=True, transform=transform)
     val_set = torchvision.datasets.MNIST(root=args.data.data_root, train=False, transform=transform)
@@ -20,12 +23,15 @@ def get_mnist_dataloader(args):
 
     train_loader = torch.utils.data.DataLoader(train_set, batch_size=train_batch_size,
                                               shuffle=True, num_workers=2)
-
     val_loader = torch.utils.data.DataLoader(val_set, batch_size=val_batch_size,
                                               shuffle=True, num_workers=2)
 
     return train_loader, val_loader                                          
 
+
+
+
+# Some old helper functions:
 def load_mnist():
     image_size = 28
     transform = transforms.Compose([transforms.Resize(image_size),\

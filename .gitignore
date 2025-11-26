@@ -1,7 +1,8 @@
-PAPERS/*
+PAPERS*/*
 *poetry*
 __pycache__/
 *egg-info/
 .vscode/
 *.pyc 
- 
+wandb*
+.ipynb_checkpoints

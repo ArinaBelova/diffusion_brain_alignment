@@ -1,16 +1,35 @@
+wandb:
+  project_name: conditional-diffusion-mnist
+
+diffusion:
+  diffusion_type: vp
+  timesteps: 100
+  T: 1.0 #1000.0
+  eps: 1.e-5 # time epsilon for the reverse timegrid
+
+  beta_min: 1.e-4 # 0.01
+  beta_max: 0.02 # 10.0
+
+  max_diffusivity: ~
+
+  # diffusion_type: ve
+  # timesteps: 100
+  # sigma_min: 1.e-4
+  # sigma_max: 0.02
+
 data:
-  data_name: mnist
+  data_name: toy #mnist
   data_root: './data'
 
 # need to wire up the model arguments' with UNet class definition
 model:
-  name: unet
-  input_size: 28
-  num_classes: 10
-  c_in: 1
-  c_out: 1
+  name: gfdm-unet #unet-diffusers # unet
+  input_size: 2 #32
+  num_classes: 8 #10
+  c_in: 2 #1
+  c_out: 2 #1
   time_dim: 256
-  dropout_prob: 0.2
+  dropout_prob: 0.2 # label dropout in classifier-free training
   remove_deep_conv: false
 
 optim:
@@ -28,11 +47,20 @@ optim:
   # patience: 50
 
 train:
-  epochs: 1000
-  image_size: 28
+  epochs: 200
+  image_size: 2 #32
   batch_size: 128
   dataset_size: 60000
+  # for toy dataset:
+  label_type: index
 
-validation:
-  eval_freq: 100
-  batch_size: 1 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
+# may need to combine this with either diffusion or validation or both
+sampling:
+  n_steps: 100
+  guidance_scale: 0.8
+  label_to_generate: 8
+
+# validation:
+#   eval_freq: 100
+#   batch_size: 100 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
+#   label_to_generate: 0
