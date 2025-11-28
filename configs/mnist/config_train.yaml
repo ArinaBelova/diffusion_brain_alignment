@@ -23,8 +23,8 @@ data:
 
 # need to wire up the model arguments' with UNet class definition
 model:
-  name: gfdm-unet #unet-diffusers # unet
-  input_size: 1 #32
+  name: toy-mlp #gfdm-unet #unet-diffusers # unet
+  input_size: 2 #32
   num_classes: 8 #10
   c_in: 2 #1
   c_out: 2 #1

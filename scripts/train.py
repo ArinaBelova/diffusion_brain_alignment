@@ -47,9 +47,6 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, args)
     # TODO: check this! here I simply need to estimate p_{0t}(x(t)|x(0)) mean and variance and use them to compute the true score
     true_score = -noise
     
-    # print("t * 1000 shape: ", (t * 1000).shape)
-    # print("x shape: ", x.shape)
-    # print("label shape: ", label.shape)
     if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
         print(x.shape, noise.shape, label.shape)
         predicted_score = score_fn(x, t * 1000, label, return_dict=False)[0] # multiply by 1000 so time embedding works better
@@ -57,7 +54,13 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, args)
         # in training we would like to drop classes sometimes for classifier-free conditioning
         predicted_score = score_fn(x, t * 1000, label, apply_class_dropout=True) # multiply by 1000 so time embedding works better
     else:
-        predicted_score = score_fn(x, t * 1000, label)
+        # toy-mlp is under this case as we're explicitly mask the label here:
+        mask = torch.bernoulli(torch.full((len(label),), args.model.dropout_prob)).to(label.device)
+        
+        #print(label.shape, mask.shape, (args.model.num_classes * mask).shape)
+        masked_labels = label * (1 - mask) + (args.model.num_classes * mask)
+        masked_labels = masked_labels.long()
+        predicted_score = score_fn(x, t * 1000, masked_labels)
 
     loss = loss_function(predicted_score, true_score)
  

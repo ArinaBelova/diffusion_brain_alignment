@@ -188,7 +188,7 @@ def generate_samples(num_samples: int,
     """Function to generate samples from the learned diffusion model"""
     # initial samples from p_T
     dim_x = (args.model.c_in, args.model.input_size) #, args.data.input_size)
-    x_T = torch.randn(size=(num_samples, *dim_x), device=device).expand(-1, -1, 4)
+    x_T = torch.randn(size=(num_samples, *dim_x), device=device) #.expand(-1, -1, 4)
     
     _, x_0 = run_reverse_sde(
         diffusion_process=diffusion_process,

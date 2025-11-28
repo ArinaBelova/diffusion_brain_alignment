@@ -68,6 +68,6 @@ class EightGaussianConditional(ToyDataset):
 
         # copy the information over height and width channels to be compatible with convnets
         # gaussians = gaussians[:, :, None, None] #.expand(-1, -1, 32, 32)
-        gaussians = gaussians[:, :, None].expand(-1, -1, 4)
+        # gaussians = gaussians[:, :, None].expand(-1, -1, 4)
 
         return gaussians, labels #[:, None]
