@@ -67,6 +67,7 @@ class EightGaussianConditional(ToyDataset):
             raise ValueError("Invalid label_type. Choose 'index' or 'coordinates'.")
 
         # copy the information over height and width channels to be compatible with convnets
-        gaussians = gaussians[:, :, None, None]#.expand(-1, -1, 32, 32)
+        # gaussians = gaussians[:, :, None, None] #.expand(-1, -1, 32, 32)
+        gaussians = gaussians[:, :, None].expand(-1, -1, 4)
 
-        return gaussians, labels[:, None]
+        return gaussians, labels #[:, None]

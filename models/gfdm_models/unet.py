@@ -315,6 +315,10 @@ class AttentionBlock(nn.Module):
 
     def _forward(self, x, encoder_out=None):
         b, _, *spatial = x.shape
+
+        # print("x shape in attention block: ", x.shape)
+        # print("self.norm(x).shape", self.norm(x).shape)
+        # print(self.qkv)
         qkv = self.qkv(self.norm(x)).view(b, -1, np.prod(spatial))
         if encoder_out is not None:
             encoder_out = self.encoder_kv(encoder_out)
@@ -560,8 +564,9 @@ class GFDM_UNetModel(nn.Module):
             linear(time_embed_dim, time_embed_dim),
         )
 
+        # TODO: add to the embedder in UNet index y_empty=10 !!!!!!!!!!!!
         if self.num_classes is not None:
-            self.label_emb = nn.Embedding(num_classes, time_embed_dim)
+            self.label_emb = nn.Embedding(num_classes + 1, time_embed_dim) # +1 for empty label
 
         ch = input_ch = int(channel_mult[0] * model_channels)
         self.input_blocks = nn.ModuleList(
@@ -592,6 +597,7 @@ class GFDM_UNetModel(nn.Module):
                             num_heads=num_heads,
                             num_head_channels=num_head_channels,
                             use_new_attention_order=use_new_attention_order,
+                            dims=dims,
                         )
                     )
                 self.input_blocks.append(TimestepEmbedSequential(*layers))
@@ -637,6 +643,7 @@ class GFDM_UNetModel(nn.Module):
                 num_heads=num_heads,
                 num_head_channels=num_head_channels,
                 use_new_attention_order=use_new_attention_order,
+                dims=dims,
             ),
             ResBlock(
                 ch,
@@ -673,6 +680,7 @@ class GFDM_UNetModel(nn.Module):
                             num_heads=num_heads_upsample,
                             num_head_channels=num_head_channels,
                             use_new_attention_order=use_new_attention_order,
+                            dims=dims,
                         )
                     )
                 if level and i == num_res_blocks:
@@ -728,7 +736,7 @@ class GFDM_UNetModel(nn.Module):
         :return: an [N x C x ...] Tensor of outputs.
         """
 
-        timesteps = timesteps.squeeze()
+        timesteps = timesteps #.squeeze()
 
         if y is not None:
             y = y.squeeze()
@@ -739,6 +747,7 @@ class GFDM_UNetModel(nn.Module):
 
         if self.num_classes is not None:
             assert y.shape == (x.shape[0],)
+            #print(self.label_emb)
             emb = emb + self.label_emb(y)
 
         h = x.type(self.dtype)
@@ -747,6 +756,8 @@ class GFDM_UNetModel(nn.Module):
             hs.append(h)
         h = self.middle_block(h, emb)
         for module in self.output_blocks:
+            # print("h shape ", h.shape)
+            # print("hs length: ", len(hs))
             h = th.cat([h, hs.pop()], dim=1)
             h = module(h, emb)
         h = h.type(x.dtype)

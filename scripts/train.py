@@ -5,6 +5,7 @@ import torch
 import torchvision
 import wandb
 import numpy as np
+import matplotlib.pyplot as plt
 import datetime
 
 from utils.grad_updaters import set_loss_function, set_optimiser, set_learning_rate_scheduler 
@@ -46,7 +47,9 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, args)
     # TODO: check this! here I simply need to estimate p_{0t}(x(t)|x(0)) mean and variance and use them to compute the true score
     true_score = -noise
     
-    print("t * 1000 shape: ", (t * 1000).shape)
+    # print("t * 1000 shape: ", (t * 1000).shape)
+    # print("x shape: ", x.shape)
+    # print("label shape: ", label.shape)
     if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
         print(x.shape, noise.shape, label.shape)
         predicted_score = score_fn(x, t * 1000, label, return_dict=False)[0] # multiply by 1000 so time embedding works better
@@ -55,7 +58,7 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, args)
         predicted_score = score_fn(x, t * 1000, label, apply_class_dropout=True) # multiply by 1000 so time embedding works better
     else:
         predicted_score = score_fn(x, t * 1000, label)
-        
+
     loss = loss_function(predicted_score, true_score)
  
     return loss
@@ -71,7 +74,7 @@ def train_epoch(epoch, model, optimizer, lr_scheduler, train_dataloader, loss_fu
 
         # TODO: check why data type changes from float64 to DoubleTensor somewhere here...
         data = data.float().to(DEVICE)
-        label = label.to(DEVICE).squeeze() # as label is given by default as (b, 1)
+        label = label.to(DEVICE) # as label is given by default as (b, 1)
 
         b, *_ = data.shape
         # sample a random timepoints for the backward process
@@ -100,6 +103,19 @@ def train_epoch(epoch, model, optimizer, lr_scheduler, train_dataloader, loss_fu
 
     return avg_loss
 
+def visualise_results(generated_samples, epoch, args):
+    if args.data.data_name == "toy":
+        # for toy data we need to plot scatter plots
+        generated_samples = generated_samples.cpu().numpy()
+        fig, ax = plt.subplots()
+        ax.scatter(generated_samples[:, 0], generated_samples[:, 1], alpha=0.6)
+        ax.set_title(f"Generated Samples label {args.validation.label_to_generate} at Epoch {epoch}")
+        wandb.log({"validation_sample": wandb.Image(fig)}, step=epoch)
+        plt.close(fig)
+    else:    
+        grid_to_display = torchvision.utils.make_grid(generated_samples, nrow=np.sqrt(args.validation.batch_size))
+        wandb.log({"validation_sample": wandb.Image(grid_to_display)}, step=epoch)
+    
 def train(args):
     #torch.set_default_dtype(torch.float64)
 
@@ -126,18 +142,14 @@ def train(args):
         # TODO: implement validation and display of generated images to wandb every eval_freq epochs 
         if epoch % args.validation.eval_freq == 0:
             print(f"Validation at epoch {epoch+1}")
-            generated_samples = diffusivity.generate_samples(args.validation.batch_size, model, diffusion_process, args)
+            generated_samples = diffusivity.generate_samples(args.validation.batch_size, model, diffusion_process, args, device=DEVICE)
             # TODO: add other image statistics later 
-            grid_to_display = torchvision.utils.make_grid(generated_samples, nrow=np.sqrt(args.validation.batch_size))
-            wandb.log({"validation_sample": wandb.Image(grid_to_display)}, step=epoch)
+            visualise_results(generated_samples, epoch, args)
+            
     print("Training completed.")
 
 def main():
     # parse the config file and job_id, given as cmd arguments
-    # Set here a gloabl device variable for the whole training script:
-    global DEVICE 
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     args = parse_args()
     config = load_config_from_yaml(args.config)
     args = SimpleNamespace(**vars(args), **vars(config))
@@ -153,4 +165,7 @@ def main():
     train(args)    
 
 if __name__ == "__main__":
+    # Set here a global device variable for the whole training script:
+    global DEVICE 
+    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     main()    

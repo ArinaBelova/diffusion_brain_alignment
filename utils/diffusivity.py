@@ -116,7 +116,7 @@ def run_forward_sde(process: StandardDiffusion,
 
 @torch.inference_mode()
 def run_reverse_sde(diffusion_process: StandardDiffusion,
-            x_0: np.ndarray,
+            x_0: torch.Tensor, #np.ndarray,
             score_fn: Callable,
             # forward_x_0: np.ndarray,
             # t_0: float = 0.0, 
@@ -125,7 +125,7 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
             # injected_noises = None,
             epsilon=1e-3,
             guidance_scale: float = 1.0,
-            label: int = 0,
+            label: int = 1,
             num_classes: int = 10,
             device="cpu",
             **kwargs
@@ -138,7 +138,7 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
 
     n_traj, dim_x = x_0.shape[0], x_0.shape[1:]
     # don't start with t = 0 to avoid division by zero in score function
-    time_grid = np.linspace(T, epsilon, n_steps + 1, device=device)
+    time_grid = torch.linspace(T, epsilon, n_steps + 1)
     dt = time_grid[1] - time_grid[0]
 
     # When we thought the precision was the problem:
@@ -148,53 +148,59 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
     # time_grid = time_grid.astype(np.float64)
 
     x_traj = [x_0]
-    y_target = (label + np.zeros(n_traj, 1)).long()
-    y_empty = num_classes + np.zeros(n_traj, 1).long()
-
+    y_target = torch.tensor([label]).long().repeat(n_traj, 1) #(label + np.zeros((n_traj, 1))).long()
+    y_empty = torch.tensor([num_classes]).long().repeat(n_traj, 1) #num_classes + np.zeros((n_traj, 1)).long()
+    
+    # print("num_classes ", num_classes)
+    # print("y target ", y_target.shape)
+    # print("y empty ", y_empty.shape)
     for idx, t in enumerate(time_grid):
         x = x_traj[idx]
-        t = time_grid[idx]
+        t = torch.tensor([time_grid[idx]]).to(device)
 
         determ_drift = f(x, t) * dt
 
-        z = np.random.randn(n_traj, *dim_x) 
-        diffusivity_sample = g(x, t) * np.sqrt(np.abs(dt)) * z 
+        z = torch.randn(n_traj, *dim_x) 
+        diffusivity_sample = g(x, t) * torch.sqrt(torch.abs(dt)) * z 
+
+        #print("time t: ", t.shape) # (1000, 1000)
 
         if guidance_scale == 1.0:
-            score = score_fn(x = x, t = t, y = y_target) / np.sqrt(diffusion_process.var(t))
+            score = score_fn(x, t, y_target) / torch.sqrt(diffusion_process.var(t))
         else:
-            score_uncond = score_fn(x = x, t = t, y = y_empty)
-            score_cond = score_fn(x = x, t = t, y = y_target)
-            score = ((1 - guidance_scale) * score_uncond + guidance_scale * score_cond) / np.sqrt(diffusion_process.var(t))
+            score_uncond = score_fn(x, t, y_empty)
+            score_cond = score_fn(x, t, y_target)
+            score = ((1 - guidance_scale) * score_uncond + guidance_scale * score_cond) / torch.sqrt(diffusion_process.var(t))
 
         next_step = x + determ_drift - g(x, t)**2 * score * dt + diffusivity_sample
         #print(f"time {t} next_step: ", next_step) # (1000, 1000)
 
         x_traj.append(next_step)
     
-    return np.stack(x_traj), next_step
+    return torch.stack(x_traj), next_step
 
 @torch.inference_mode()
 def generate_samples(num_samples: int,
                      model: nn.Module,
                      diffusion_process: StandardDiffusion,
-                     args):
+                     args,
+                     device):
     """Function to generate samples from the learned diffusion model"""
     # initial samples from p_T
-    dim_x = (args.data.channels, args.data.input_size, args.data.input_size)
-    x_T = torch.randn(size=(num_samples, *dim_x), device=args.device)
+    dim_x = (args.model.c_in, args.model.input_size) #, args.data.input_size)
+    x_T = torch.randn(size=(num_samples, *dim_x), device=device).expand(-1, -1, 4)
     
     _, x_0 = run_reverse_sde(
         diffusion_process=diffusion_process,
-        x_0=x_T.cpu().numpy(),
+        x_0=x_T, # .cpu().numpy()
         score_fn=model,
         T=diffusion_process.T.item(),
-        n_steps=args.sampling.n_steps,
-        guidance_scale=args.sampling.guidance_scale,
-        label=args.sampling.label_to_generate,
+        n_steps=args.validation.n_steps,
+        guidance_scale=args.validation.guidance_scale,
+        label=args.validation.label_to_generate,
         num_classes=args.model.num_classes,
         score_scaling=True,
-        device=args.device,
+        device=device,
     )
     return x_0
 

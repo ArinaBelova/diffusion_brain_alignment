@@ -22,12 +22,13 @@ def set_model(args):
         model = GFDM_UNetModel(
             image_size=args.model.input_size,
             in_channels=args.model.c_in,
-            model_channels=32,
+            model_channels=8, # 32
             out_channels=args.model.c_out,
             num_res_blocks=1,
             attention_resolutions=(4,2),
             num_classes=args.model.num_classes,
             channel_mult=(1,2,4), # given by default but in larger resultion
+            dims=1,
             dropout=0, # resnet dropout prob, not classifier-free dropout
         )    
         
