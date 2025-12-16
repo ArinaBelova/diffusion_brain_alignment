@@ -71,9 +71,12 @@ def train_epoch(epoch, model, optimizer, lr_scheduler, train_dataloader, loss_fu
     avg_loss = 0.0
 
     for idx, (data, label) in enumerate(train_dataloader):
-        # grid_to_display = torchvision.utils.make_grid(data, 
-        #                                               nrow=10) # int(np.sqrt(args.validation.batch_size))
-        # wandb.log({"train_sample": wandb.Image(grid_to_display)})
+        ##### visualise training data, remove later ######
+        print("Visualising training data samples...")
+        print(data.shape)
+        visualise_results(data, epoch, args)
+        #data = data.to(DEVICE)
+        ###############################################
 
         # TODO: check why data type changes from float64 to DoubleTensor somewhere here...
         data = data.float().to(DEVICE)
@@ -90,7 +93,6 @@ def train_epoch(epoch, model, optimizer, lr_scheduler, train_dataloader, loss_fu
         
         avg_loss += loss.item()
         step = epoch * len(train_dataloader) + idx
-        wandb.log({"train/loss": loss}, step=step)
 
         # optimise the model
         loss.backward()
@@ -98,8 +100,12 @@ def train_epoch(epoch, model, optimizer, lr_scheduler, train_dataloader, loss_fu
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         optimizer.zero_grad()
-        # TODO: check how lr scheduler is usually updated 
+        # TODO: check how lr scheduler is usually updated and whether we do 1 additional step 
+        print("step #{}, loss: {:.6f}".format(step, loss.item()))
         lr_scheduler.step()
+        wandb.log({"train/loss": loss,
+                   "train/lr": lr_scheduler.get_last_lr()[0]},
+                    step=step)
     
     # report average loss of current epoch to wandb:
     avg_loss /= len(train_dataloader)
@@ -111,13 +117,22 @@ def visualise_results(generated_samples, epoch, args):
         # for toy data we need to plot scatter plots
         generated_samples = generated_samples.cpu().numpy()
         fig, ax = plt.subplots()
-        ax.scatter(generated_samples[:, 0], generated_samples[:, 1], alpha=0.6)
+
+        for scatter_num in range(generated_samples.shape[0]):
+            ax.scatter(
+                generated_samples[scatter_num, :, 0],
+                generated_samples[scatter_num, :, 1],
+                alpha=0.6,
+                s=10,
+            )
+        # ax.scatter(generated_samples[:, 0], generated_samples[:, 1], alpha=0.6)
+        
         ax.set_title(f"Generated Samples label {args.validation.label_to_generate} at Epoch {epoch}")
-        wandb.log({"validation_sample": wandb.Image(fig)}, step=epoch)
+        wandb.log({"validation_sample": wandb.Image(fig)}) #, step=epoch)
         plt.close(fig)
     else:    
         grid_to_display = torchvision.utils.make_grid(generated_samples, nrow=np.sqrt(args.validation.batch_size))
-        wandb.log({"validation_sample": wandb.Image(grid_to_display)}, step=epoch)
+        wandb.log({"validation_sample": wandb.Image(grid_to_display)}) #, step=epoch)
     
 def train(args):
     #torch.set_default_dtype(torch.float64)
@@ -140,7 +155,7 @@ def train(args):
         print(f"Epoch {epoch+1}/{args.train.epochs} started.")
         avg_epoch_loss = train_epoch(epoch, model, optimizer, lr_scheduler, train_dataloader, loss_function, args)
         print(f"Epoch {epoch+1} completed. Average Loss: {avg_epoch_loss:.6f}")
-        wandb.log({"epoch": epoch+1, "train/avg_loss": avg_epoch_loss}, step=epoch)
+        wandb.log({"train/avg_epoch_loss": avg_epoch_loss}) #, step=epoch)
         
         # TODO: implement validation and display of generated images to wandb every eval_freq epochs 
         if epoch % args.validation.eval_freq == 0:

@@ -1,6 +1,6 @@
 import torch
 import torch.optim as optim
-
+import math
 
 def set_loss_function(args):
     if args.data.data_name == "mnist" or args.data.data_name == "toy":
@@ -40,8 +40,8 @@ def set_learning_rate_scheduler(optimizer, args):
                                                          patience=args.optim.patience, min_lr=args.optim.min_lr)
     elif args.optim.scheduler_name == 'onecycle':
         print("Using OneCycleLR scheduler")
-        print("num of total steps: ", args.train.epochs * int(args.train.dataset_size/args.train.batch_size))
+        #print("num of total steps: ", args.train.epochs * math.ceil(args.train.dataset_size/args.train.batch_size))
         scheduler = optim.lr_scheduler.OneCycleLR(optimizer=optimizer, max_lr=args.optim.max_lr, 
-                                                   total_steps=args.train.epochs * int(args.train.dataset_size/args.train.batch_size))
+                                                   total_steps=args.train.epochs * math.ceil(args.train.dataset_size / args.train.batch_size))
     
     return scheduler

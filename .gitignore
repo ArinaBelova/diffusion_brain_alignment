@@ -6,3 +6,6 @@ __pycache__/
 *.pyc 
 wandb*
 .ipynb_checkpoints
+output_logs/*
+runs/*
+cluster/*
