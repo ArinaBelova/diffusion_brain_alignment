@@ -34,11 +34,11 @@ model:
 
 optim:
   loss: mse
-  optim_name: adam
+  optim_name: adamw
   weight_decay: 1.e-3
-  lr: 1.e-5
+  lr: 1.e-4
   scheduler_name: onecycle
-  max_lr: 1.e-3 # was 1.e-4
+  max_lr: 1.e-2
 
   # for plateau:
   # min_lr: 1e-6
@@ -47,7 +47,7 @@ optim:
   # patience: 50
 
 train:
-  epochs: 1 #2000
+  epochs: 10 #200 #2000
   image_size: 1 #32
   batch_size: 128
   dataset_size: 60000
@@ -62,8 +62,8 @@ train:
 #   label_to_generate: 8
 
 validation:
-  eval_freq: 100
+  eval_freq: 1 #10
   batch_size: 128 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
   n_steps: 100
-  guidance_scale: 0.8
+  guidance_scale: 2.0 #0.8
   label_to_generate: 2

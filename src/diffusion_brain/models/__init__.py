@@ -9,10 +9,13 @@ from diffusers import UNet1DModel, UNet2DModel
 
 def set_model(args):
     if args.model.name == "unet":
+        print("Setting UNet model")
         model = UNet(args)
     elif args.model.name == "dit":
+        print("Setting DiT model")
         model = DiT(args)    
     elif args.model.name == "unet-diffusers":
+        print("Setting UNet model from diffusers library")
         model = UNet2DModel(
             in_channels=args.model.c_in,
             out_channels=args.model.c_out,
@@ -21,6 +24,7 @@ def set_model(args):
             norm_num_groups=8,
             num_class_embeds=args.model.num_classes)
     elif args.model.name == "gfdm-unet":
+        print("Setting GFDM UNet model")
         model = GFDM_UNetModel(
             image_size=args.model.input_size,
             in_channels=args.model.c_in,
@@ -34,6 +38,7 @@ def set_model(args):
             dropout=0, # resnet dropout prob, not classifier-free dropout
         )
     elif args.model.name == "toy-mlp":
+        print("Setting Toy Diffusion MLP model")
         model = ToyDiffusionMLP(
             data_dim=args.model.input_size,
             # hidden_dim=args.model.hidden_dim,

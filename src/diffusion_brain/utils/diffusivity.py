@@ -13,7 +13,7 @@ from collections.abc import Callable
 from typing import Tuple
 
 def get_diffusion(
-    dynamics="ve",
+    args,
     T=1.0,
     device="cpu",
 ):
@@ -27,17 +27,15 @@ def get_diffusion(
     Return:
         the diffusion process
     """
-
-    constructors = {
-        "ve": VESDE,
-        "vp": VPSDE,
-    }
-
-    return constructors[dynamics.lower()](
-        T=T,
-        device=device,
-    )
-
+    dynamics = args.diffusion.diffusion_type
+    
+    if dynamics == "ve":
+        return VESDE(args, T=T, device=device)
+    elif dynamics == "vp":
+        return VPSDE(args, T=T, device=device)
+    else:
+        raise ValueError(f"Diffusion dynamics {dynamics} not recognized.")
+    
 class StandardDiffusion(ABC, nn.Module):
 
     """Abstract class for standard Brownian diffusion processes"""
@@ -210,8 +208,7 @@ class VESDE(StandardDiffusion):
 
     def __init__(
             self,
-            sigma_min = 0.01,
-            sigma_max = 50.0,
+            args,
             T = 1.0,
             device="cpu"
     ):
@@ -221,11 +218,11 @@ class VESDE(StandardDiffusion):
         self.name = "ve"
 
         self.register_buffer(
-            "sigma_min", torch.as_tensor(torch.tensor([sigma_min]), device=self.device)
+            "sigma_min", torch.as_tensor(torch.tensor([args.diffusion.sigma_min]), device=self.device)
         )
 
         self.register_buffer(
-            "sigma_max", torch.as_tensor(torch.tensor([sigma_max]), device=self.device)
+            "sigma_max", torch.as_tensor(torch.tensor([args.diffusion.sigma_max]), device=self.device)
         )
 
         self.register_buffer(
@@ -259,8 +256,7 @@ class VPSDE(StandardDiffusion):
     
     def __init__(
             self,
-            beta_min = 0.1, #0.01, # as in Gabriel's work
-            beta_max = 20, # 50.0,
+            args,
             T = 1.0,
             device="cpu"
     ):
@@ -269,10 +265,10 @@ class VPSDE(StandardDiffusion):
 
         self.name = "vp"
         self.register_buffer(
-            "beta_min", torch.as_tensor(torch.tensor([beta_min]), device=self.device)
+            "beta_min", torch.as_tensor(torch.tensor([args.diffusion.beta_min]), device=self.device)
         )
         self.register_buffer(
-            "beta_max", torch.as_tensor(torch.tensor([beta_max]), device=self.device)
+            "beta_max", torch.as_tensor(torch.tensor([args.diffusion.beta_max]), device=self.device)
         )
 
     # TODO: decide if we use this beta_t or calculate beta in mu.g ourselves

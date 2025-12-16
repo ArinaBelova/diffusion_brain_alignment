@@ -62,6 +62,7 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, args)
         masked_labels = masked_labels.long()
         predicted_score = score_fn(x, t * 1000, masked_labels)
 
+    #print(f"predicted score {predicted_score} \t \t \t true score {true_score}")
     loss = loss_function(predicted_score, true_score)
  
     return loss
@@ -72,9 +73,10 @@ def train_epoch(epoch, model, optimizer, lr_scheduler, train_dataloader, loss_fu
 
     for idx, (data, label) in enumerate(train_dataloader):
         ##### visualise training data, remove later ######
-        print("Visualising training data samples...")
-        print(data.shape)
-        visualise_results(data, epoch, args)
+        # print("Visualising training data samples...")
+        # print(f"created train dataloader is {train_dataloader}")
+        # print(f"in training datashape is {data.shape}")
+        # visualise_results(data, epoch, args)
         #data = data.to(DEVICE)
         ###############################################
 
@@ -101,7 +103,7 @@ def train_epoch(epoch, model, optimizer, lr_scheduler, train_dataloader, loss_fu
         optimizer.step()
         optimizer.zero_grad()
         # TODO: check how lr scheduler is usually updated and whether we do 1 additional step 
-        print("step #{}, loss: {:.6f}".format(step, loss.item()))
+        #print("step #{}, loss: {:.6f}".format(step, loss.item()))
         lr_scheduler.step()
         wandb.log({"train/loss": loss,
                    "train/lr": lr_scheduler.get_last_lr()[0]},
@@ -118,14 +120,7 @@ def visualise_results(generated_samples, epoch, args):
         generated_samples = generated_samples.cpu().numpy()
         fig, ax = plt.subplots()
 
-        for scatter_num in range(generated_samples.shape[0]):
-            ax.scatter(
-                generated_samples[scatter_num, :, 0],
-                generated_samples[scatter_num, :, 1],
-                alpha=0.6,
-                s=10,
-            )
-        # ax.scatter(generated_samples[:, 0], generated_samples[:, 1], alpha=0.6)
+        ax.scatter(generated_samples[:, 0], generated_samples[:, 1], alpha=0.6)
         
         ax.set_title(f"Generated Samples label {args.validation.label_to_generate} at Epoch {epoch}")
         wandb.log({"validation_sample": wandb.Image(fig)}) #, step=epoch)
@@ -149,7 +144,9 @@ def train(args):
     # get the dataloaders, it seems that we don't need to have a validation dataloader as we;re in the pure diffusion setting and not in bridges
     train_dataloader, _ = get_dataloader(args)
 
-    diffusion_process = diffusivity.get_diffusion(dynamics = args.diffusion.diffusion_type, device=DEVICE)
+    print(f"We're getting diffusion type {args.diffusion.diffusion_type}")
+    diffusion_process = diffusivity.get_diffusion(args, device=DEVICE)
+    print(f"beta min is {diffusion_process.beta_min}, beta_max is {diffusion_process.beta_max}")
 
     for epoch in range(args.train.epochs):
         print(f"Epoch {epoch+1}/{args.train.epochs} started.")

@@ -38,36 +38,79 @@ class ToyDataset(Dataset):
     # torch.from_numpy(self.data[idx]).long(), torch.from_numpy(self.labels[idx]).long()
 
 class EightGaussianConditional(ToyDataset):
-    def __init__(self, n_samples, random_state=None, label_type='index'):
+    def __init__(self, n_samples, std=0.5, radius=4.0, random_state=None, label_type='index'):
         """
+        n_samples: number of datapoints/Gaussians
+        std: standard deviation of each Gaussian
+        radius: distance of centers from the origin
         label_type: 'index' for numeric labels (0, 1, 2, ...), 
                     'coordinates' for center coordinates as labels.
         """
         self.label_type = label_type
+        self.std = std
+        self.radius = radius
         super().__init__(n_samples, random_state=random_state)
 
     def sample_data(self):
-        z = torch.randn(self.n_samples, 2)
-        scale = 4
-        sq2 = 1 / np.sqrt(2)
-        centers = [(1, 0), (-1, 0), (0, 1), (0, -1), (sq2, sq2), (-sq2, sq2), (sq2, -sq2), (-sq2, -sq2)]
-        centers = torch.tensor([(scale * x, scale * y) for x, y in centers])
+        # ---------------------------------------------------
+        # 1. Define fixed centers (8 directions on a circle)
+        # ---------------------------------------------------
+        angles = torch.linspace(0, 2 * np.pi, 9)[:-1]
+        centers = torch.stack(
+            [
+                self.radius * torch.cos(angles),
+                self.radius * torch.sin(angles),
+            ],
+            dim=1,
+        )
 
-        # Randomly assign each sample to a Gaussian blob
-        center_indices = torch.randint(len(centers), size=(self.n_samples,))
-        selected_centers = centers[center_indices]
-        gaussians = sq2 * (0.5 * z + selected_centers)
+        # ---------------------------------------------------
+        # 2. Sample class indices uniformly
+        # ---------------------------------------------------
+        labels_idx = torch.randint(0, len(centers), (self.n_samples,))
+        selected_centers = centers[labels_idx]
 
-        # Generate labels based on the label_type
-        if self.label_type == 'index':
-            labels = center_indices  # Numeric labels (0, 1, 2, ...)
-        elif self.label_type == 'coordinates':
-            labels = selected_centers  # Center coordinates as labels
+        # ---------------------------------------------------
+        # 3. Sample isotropic Gaussian noise
+        # ---------------------------------------------------
+        noise = torch.randn(self.n_samples, 2)
+
+        # ---------------------------------------------------
+        # 4. Generate samples
+        #    x = μ_k + σ ε
+        # ---------------------------------------------------
+        samples = selected_centers + self.std * noise
+
+        # ---------------------------------------------------
+        # 5. Labels
+        # ---------------------------------------------------
+        if self.label_type == "index":
+            labels = labels_idx
+        elif self.label_type == "coordinates":
+            labels = selected_centers
         else:
-            raise ValueError("Invalid label_type. Choose 'index' or 'coordinates'.")
+            raise ValueError("label_type must be 'index' or 'coordinates'")
 
-        # copy the information over height and width channels to be compatible with convnets
-        # gaussians = gaussians[:, :, None, None] #.expand(-1, -1, 32, 32)
-        # gaussians = gaussians[:, :, None].expand(-1, -1, 4)
+        return samples, labels
+    
+    # def sample_data(self):
+    #     z = torch.randn(self.n_samples, 2)
+    #     scale = 4
+    #     sq2 = 1 / np.sqrt(2)
+    #     centers = [(1, 0), (-1, 0), (0, 1), (0, -1), (sq2, sq2), (-sq2, sq2), (sq2, -sq2), (-sq2, -sq2)]
+    #     centers = torch.tensor([(scale * x, scale * y) for x, y in centers])
 
-        return gaussians, labels #[:, None]
+    #     # Randomly assign each sample to a Gaussian blob
+    #     center_indices = torch.randint(len(centers), size=(self.n_samples,))
+    #     selected_centers = centers[center_indices]
+    #     gaussians = sq2 * (0.5 * z + selected_centers)
+
+    #     # Generate labels based on the label_type
+    #     if self.label_type == 'index':
+    #         labels = center_indices  # Numeric labels (0, 1, 2, ...)
+    #     elif self.label_type == 'coordinates':
+    #         labels = selected_centers  # Center coordinates as labels
+    #     else:
+    #         raise ValueError("Invalid label_type. Choose 'index' or 'coordinates'.")
+
+    #     return gaussians, labels 
