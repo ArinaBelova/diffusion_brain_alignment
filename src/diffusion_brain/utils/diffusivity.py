@@ -14,7 +14,6 @@ from typing import Tuple
 
 def get_diffusion(
     args,
-    T=1.0,
     device="cpu",
 ):
     """
@@ -28,7 +27,8 @@ def get_diffusion(
         the diffusion process
     """
     dynamics = args.diffusion.diffusion_type
-    
+    T = args.diffusion.T
+
     if dynamics == "ve":
         return VESDE(args, T=T, device=device)
     elif dynamics == "vp":
@@ -150,8 +150,8 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
     y_empty = torch.tensor([num_classes]).long().repeat(n_traj, 1).to(device) #num_classes + np.zeros((n_traj, 1)).long()
     
     # print("num_classes ", num_classes)
-    # print("y target ", y_target.shape)
-    # print("y empty ", y_empty.shape)
+    print("y target ", y_target.shape)
+    print("y empty ", y_empty.shape)
     for idx, t in enumerate(time_grid):
         x = x_traj[idx]
         t = torch.tensor([time_grid[idx]]).to(device)
@@ -162,12 +162,21 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
         diffusivity_sample = g(x, t) * torch.sqrt(torch.abs(dt)) * z 
 
         #print("time t: ", t.shape) # (1000, 1000)
+        # print(f"sqrt of the variance of the process: {torch.sqrt(diffusion_process.var(t))}", flush=True) # 0.0x values 
 
         if guidance_scale == 1.0:
-            score = score_fn(x, t, y_target) / torch.sqrt(diffusion_process.var(t))
+            if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
+                score = score_fn(x, t, y_target).sample / torch.sqrt(diffusion_process.var(t))
+            else:
+                score = score_fn(x, t, y_target).sample / torch.sqrt(diffusion_process.var(t))
         else:
-            score_uncond = score_fn(x, t, y_empty)
-            score_cond = score_fn(x, t, y_target)
+            # print("x shape", x.shape, "t shape", t.shape, "y_target shape", y_target.shape, "y_empty shape", y_empty.shape)
+            if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
+                score_uncond = score_fn(x, t, class_labels=y_empty).sample
+                score_cond = score_fn(x, t, class_labels=y_target).sample
+            else:
+                score_uncond = score_fn(x, t, y_empty)
+                score_cond = score_fn(x, t, y_target)
             score = ((1 - guidance_scale) * score_uncond + guidance_scale * score_cond) / torch.sqrt(diffusion_process.var(t))
 
         next_step = x + determ_drift - g(x, t)**2 * score * dt + diffusivity_sample
@@ -185,7 +194,11 @@ def generate_samples(num_samples: int,
                      device):
     """Function to generate samples from the learned diffusion model"""
     # initial samples from p_T
-    dim_x = (args.model.c_in, args.model.input_size) #, args.data.input_size)
+    if args.data.data_name == "toy":
+        dim_x = (args.model.c_in, args.model.input_size)
+    else:
+        dim_x = (args.model.c_in, args.model.input_size, args.model.input_size)
+
     x_T = torch.randn(size=(num_samples, *dim_x), device=device) #.expand(-1, -1, 4)
     
     _, x_0 = run_reverse_sde(

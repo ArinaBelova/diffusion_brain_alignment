@@ -5,7 +5,7 @@ from diffusion_brain.models.mlp import ToyDiffusionMLP
 
 # for MNIST case as need to be careful with dimensions of blocks in UNet
 # don't have time to think about a better way now
-from diffusers import UNet1DModel, UNet2DModel
+from diffusers import UNet1DModel, UNet2DModel, UNet2DConditionModel
 
 def set_model(args):
     if args.model.name == "unet":
@@ -16,12 +16,23 @@ def set_model(args):
         model = DiT(args)    
     elif args.model.name == "unet-diffusers":
         print("Setting UNet model from diffusers library")
-        model = UNet2DModel(
+        model = UNet2DConditionModel(
             in_channels=args.model.c_in,
             out_channels=args.model.c_out,
             sample_size=args.model.input_size,
-            block_out_channels=(32,64,128,256),
-            norm_num_groups=8,
+            block_out_channels=(64,128,256),
+            down_block_types=(
+                "DownBlock2D",
+                "DownBlock2D",
+                "DownBlock2D",
+            ),
+            up_block_types=(
+                "UpBlock2D",
+                "UpBlock2D",
+                "UpBlock2D",
+            ),
+            #norm_num_groups=8,
+            cross_attention_dim=128, 
             num_class_embeds=args.model.num_classes)
     elif args.model.name == "gfdm-unet":
         print("Setting GFDM UNet model")
@@ -34,7 +45,7 @@ def set_model(args):
             attention_resolutions=(4,2),
             num_classes=args.model.num_classes,
             channel_mult=(1,2,4), # given by default but in larger resultion
-            dims=1,
+            dims=2, # 2 for mnist
             dropout=0, # resnet dropout prob, not classifier-free dropout
         )
     elif args.model.name == "toy-mlp":

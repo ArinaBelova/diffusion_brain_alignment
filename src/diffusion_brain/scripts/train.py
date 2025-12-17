@@ -47,19 +47,29 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, args)
     # TODO: check this! here I simply need to estimate p_{0t}(x(t)|x(0)) mean and variance and use them to compute the true score
     true_score = -noise
     
-    if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
-        print(x.shape, noise.shape, label.shape)
-        predicted_score = score_fn(x, t * 1000, label, return_dict=False)[0] # multiply by 1000 so time embedding works better
-    elif args.model.name == "unet":    
-        # in training we would like to drop classes sometimes for classifier-free conditioning
-        predicted_score = score_fn(x, t * 1000, label, apply_class_dropout=True) # multiply by 1000 so time embedding works better
-    else:
-        # toy-mlp is under this case as we're explicitly mask the label here:
-        mask = torch.bernoulli(torch.full((len(label),), args.model.dropout_prob)).to(label.device)
+    # if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
+    #     #print(x.shape, noise.shape, label.shape)
+    #     predicted_score = score_fn(x, t * 1000, label, return_dict=False)[0] # multiply by 1000 so time embedding works better
+    # elif args.model.name == "unet":    
+    #     # in training we would like to drop classes sometimes for classifier-free conditioning
+    #     predicted_score = score_fn(x, t * 1000, label, apply_class_dropout=True) # multiply by 1000 so time embedding works better
+    # else:
+    #     # toy-mlp and gfdm UNet are under this case as we're explicitly mask the label here:
+    #     mask = torch.bernoulli(torch.full((len(label),), args.model.dropout_prob)).to(label.device)
         
-        #print(label.shape, mask.shape, (args.model.num_classes * mask).shape)
-        masked_labels = label * (1 - mask) + (args.model.num_classes * mask)
-        masked_labels = masked_labels.long()
+    #     #print(label.shape, mask.shape, (args.model.num_classes * mask).shape)
+    #     masked_labels = label * (1 - mask) + (args.model.num_classes * mask)
+    #     masked_labels = masked_labels.long()
+    #     predicted_score = score_fn(x, t * 1000, masked_labels)
+
+    mask = torch.bernoulli(torch.full((len(label),), args.model.dropout_prob)).to(label.device)        
+    masked_labels = label * (1 - mask) + (-1 * mask) # use -1 as the empty label
+    masked_labels = masked_labels.long()
+
+    if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
+        encoder_hidden_states = torch.zeros(x.shape[0], 1, 128, device=x.device) # 128 is cross attention dimension
+        predicted_score = score_fn(x, t * 1000, encoder_hidden_states=encoder_hidden_states, class_labels=masked_labels).sample    
+    else:
         predicted_score = score_fn(x, t * 1000, masked_labels)
 
     #print(f"predicted score {predicted_score} \t \t \t true score {true_score}")
@@ -72,14 +82,6 @@ def train_epoch(epoch, model, optimizer, lr_scheduler, train_dataloader, loss_fu
     avg_loss = 0.0
 
     for idx, (data, label) in enumerate(train_dataloader):
-        ##### visualise training data, remove later ######
-        # print("Visualising training data samples...")
-        # print(f"created train dataloader is {train_dataloader}")
-        # print(f"in training datashape is {data.shape}")
-        # visualise_results(data, epoch, args)
-        #data = data.to(DEVICE)
-        ###############################################
-
         # TODO: check why data type changes from float64 to DoubleTensor somewhere here...
         data = data.float().to(DEVICE)
         label = label.to(DEVICE) # as label is given by default as (b, 1)
@@ -98,6 +100,11 @@ def train_epoch(epoch, model, optimizer, lr_scheduler, train_dataloader, loss_fu
 
         # optimise the model
         loss.backward()
+
+        # TODO: check gradients here!
+        for name, parameters in model.parameters():
+            print(param.grad.sum())
+
         # Clip gradient norm
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -126,7 +133,7 @@ def visualise_results(generated_samples, epoch, args):
         wandb.log({"validation_sample": wandb.Image(fig)}) #, step=epoch)
         plt.close(fig)
     else:    
-        grid_to_display = torchvision.utils.make_grid(generated_samples, nrow=np.sqrt(args.validation.batch_size))
+        grid_to_display = torchvision.utils.make_grid(generated_samples, nrow=int(np.sqrt(args.validation.batch_size)))
         wandb.log({"validation_sample": wandb.Image(grid_to_display)}) #, step=epoch)
     
 def train(args):
@@ -144,9 +151,9 @@ def train(args):
     # get the dataloaders, it seems that we don't need to have a validation dataloader as we;re in the pure diffusion setting and not in bridges
     train_dataloader, _ = get_dataloader(args)
 
-    print(f"We're getting diffusion type {args.diffusion.diffusion_type}")
+    print(f"We're getting diffusion type {args.diffusion.diffusion_type}", flush=True)
     diffusion_process = diffusivity.get_diffusion(args, device=DEVICE)
-    print(f"beta min is {diffusion_process.beta_min}, beta_max is {diffusion_process.beta_max}")
+    print(f"beta min is {diffusion_process.beta_min}, beta_max is {diffusion_process.beta_max}", flush=True)
 
     for epoch in range(args.train.epochs):
         print(f"Epoch {epoch+1}/{args.train.epochs} started.")
