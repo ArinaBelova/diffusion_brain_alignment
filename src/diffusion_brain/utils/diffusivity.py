@@ -126,7 +126,7 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
             label: int = 1,
             num_classes: int = 10,
             device="cpu",
-            **kwargs
+            args=None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Function to run reverse-time stochastic differential equation. We assume a deterministic initial Gaussian distribution p_T."""
     score_fn.eval().to(device)
@@ -212,6 +212,7 @@ def generate_samples(num_samples: int,
         num_classes=args.model.num_classes,
         score_scaling=True,
         device=device,
+        args=args,
     )
     return x_0
 
