@@ -63,7 +63,7 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, args)
     #     predicted_score = score_fn(x, t * 1000, masked_labels)
 
     mask = torch.bernoulli(torch.full((len(label),), args.model.dropout_prob)).to(label.device)        
-    masked_labels = label * (1 - mask) + (-1 * mask) # use -1 as the empty label
+    masked_labels = label * (1 - mask) + (args.model.num_classes * mask) # use -1 as the empty label
     masked_labels = masked_labels.long()
 
     if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
@@ -102,8 +102,9 @@ def train_epoch(epoch, model, optimizer, lr_scheduler, train_dataloader, loss_fu
         loss.backward()
 
         # TODO: check gradients here!
-        for name, parameters in model.parameters():
-            print(param.grad.sum())
+        # for name, parameters in model.named_parameters():
+        #     if "blocks.2.linear2.weight" in name:
+        #         print(name, parameters.sum())
 
         # Clip gradient norm
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
