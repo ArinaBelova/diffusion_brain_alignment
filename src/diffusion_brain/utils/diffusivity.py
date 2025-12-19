@@ -84,7 +84,7 @@ def run_forward_sde(process: StandardDiffusion,
     #Number of trajectories, dimension of data:
     
     n_traj, dim_x = x_0.shape[0], x_0.shape[1:]
-    print("n_traj, dim_x:", n_traj, dim_x)
+    #print("n_traj, dim_x:", n_traj, dim_x)
 
     #Compute time grid for discretization and step size:
     time_grid = torch.linspace(t_0, T, n_steps)
@@ -92,7 +92,7 @@ def run_forward_sde(process: StandardDiffusion,
     
     #Initialize list of trajectory:
     x_traj = [x_0]
-    print("time grid ", time_grid)
+    #print("time grid ", time_grid)
     for idx, t in enumerate(time_grid):
         #Get last location and time
         x = x_traj[idx]
@@ -126,6 +126,7 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
             label: int = 1,
             num_classes: int = 10,
             device="cpu",
+            args=None,
             **kwargs
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Function to run reverse-time stochastic differential equation. We assume a deterministic initial Gaussian distribution p_T."""
@@ -150,8 +151,8 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
     y_empty = torch.tensor([num_classes]).long().repeat(n_traj, 1).to(device) #num_classes + np.zeros((n_traj, 1)).long()
     
     # print("num_classes ", num_classes)
-    print("y target ", y_target.shape)
-    print("y empty ", y_empty.shape)
+    # print("y target ", y_target.shape)
+    # print("y empty ", y_empty.shape)
     for idx, t in enumerate(time_grid):
         x = x_traj[idx]
         t = torch.tensor([time_grid[idx]]).to(device)
@@ -212,6 +213,7 @@ def generate_samples(num_samples: int,
         num_classes=args.model.num_classes,
         score_scaling=True,
         device=device,
+        args=args
     )
     return x_0
 

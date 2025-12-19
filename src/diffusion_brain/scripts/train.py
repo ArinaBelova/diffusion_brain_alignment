@@ -41,7 +41,7 @@ def parse_args():
     args = parser.parse_args()
     return args
 
-def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, args):
+def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffusion_process, args):
     #t = t[:, None, None, None] # to match the datapoint dimensions for the further arithmetic; NOTE: in the model we need to have t as (b,)
 
     # TODO: check this! here I simply need to estimate p_{0t}(x(t)|x(0)) mean and variance and use them to compute the true score
@@ -63,21 +63,24 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, args)
     #     predicted_score = score_fn(x, t * 1000, masked_labels)
 
     mask = torch.bernoulli(torch.full((len(label),), args.model.dropout_prob)).to(label.device)        
-    masked_labels = label * (1 - mask) + (-1 * mask) # use -1 as the empty label
-    masked_labels = masked_labels.long()
+    
 
     if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
+        masked_labels = label * (1 - mask) + (-1 * mask) # use -1 as the empty label
+        masked_labels = masked_labels.long()
         encoder_hidden_states = torch.zeros(x.shape[0], 1, 128, device=x.device) # 128 is cross attention dimension
-        predicted_score = score_fn(x, t * 1000, encoder_hidden_states=encoder_hidden_states, class_labels=masked_labels).sample    
+        predicted_score = score_fn(x, t, encoder_hidden_states=encoder_hidden_states, class_labels=masked_labels).sample    #  * 1000
     else:
-        predicted_score = score_fn(x, t * 1000, masked_labels)
+        masked_labels = label * (1 - mask) + (args.model.num_classes * mask) # use num classes as the empty label
+        masked_labels = masked_labels.long()
+        predicted_score = score_fn(x, t, masked_labels) #  * 1000
 
     #print(f"predicted score {predicted_score} \t \t \t true score {true_score}")
     loss = loss_function(predicted_score, true_score)
  
     return loss
 
-def train_epoch(epoch, model, optimizer, lr_scheduler, train_dataloader, loss_function, args)-> torch.Tensor:
+def train_epoch(epoch, model, optimizer, lr_scheduler, train_dataloader, loss_function, diffusion_process, args)-> torch.Tensor:
     model.train().to(DEVICE)
     avg_loss = 0.0
 
@@ -93,17 +96,18 @@ def train_epoch(epoch, model, optimizer, lr_scheduler, train_dataloader, loss_fu
         noise = torch.randn_like(data, device=data.device)
 
         # run a backward SDE with this random timeline 
-        loss = one_step_score_estimation(data, t, noise, label, model, loss_function, args)
+        loss = one_step_score_estimation(data, t, noise, label, model, loss_function, diffusion_process, args)
         
         avg_loss += loss.item()
         step = epoch * len(train_dataloader) + idx
 
         # optimise the model
         loss.backward()
+        #print(loss.item())
 
-        # TODO: check gradients here!
-        for name, parameters in model.parameters():
-            print(param.grad.sum())
+        # # TODO: check gradients here!
+        # for name, parameters in model.named_parameters():
+        #     print(param.grad.sum())
 
         # Clip gradient norm
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -156,19 +160,19 @@ def train(args):
     print(f"beta min is {diffusion_process.beta_min}, beta_max is {diffusion_process.beta_max}", flush=True)
 
     for epoch in range(args.train.epochs):
-        print(f"Epoch {epoch+1}/{args.train.epochs} started.")
-        avg_epoch_loss = train_epoch(epoch, model, optimizer, lr_scheduler, train_dataloader, loss_function, args)
-        print(f"Epoch {epoch+1} completed. Average Loss: {avg_epoch_loss:.6f}")
+        print(f"Epoch {epoch+1}/{args.train.epochs} started.", flush=True)
+        avg_epoch_loss = train_epoch(epoch, model, optimizer, lr_scheduler, train_dataloader, loss_function, diffusion_process, args)
+        print(f"Epoch {epoch+1} completed. Average Loss: {avg_epoch_loss:.6f}", flush=True)
         wandb.log({"train/avg_epoch_loss": avg_epoch_loss}) #, step=epoch)
         
         # TODO: implement validation and display of generated images to wandb every eval_freq epochs 
         if epoch % args.validation.eval_freq == 0:
-            print(f"Validation at epoch {epoch+1}")
+            print(f"Validation at epoch {epoch+1}", flush=True)
             generated_samples = diffusivity.generate_samples(args.validation.batch_size, model, diffusion_process, args, device=DEVICE)
             # TODO: add other image statistics later 
             visualise_results(generated_samples, epoch, args)
             
-    print("Training completed.")
+    print("Training completed.", flush=True)
 
 def main():
     # parse the config file and job_id, given as cmd arguments
