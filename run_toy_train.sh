@@ -48,7 +48,7 @@ mkdir -p "${LOCAL_JOB_DIR}/job_results"
 export SSL_CERT_FILE=${SLURM_SUBMIT_DIR}/cacert.pem
 # Train
 apptainer exec --nv --bind ${LOCAL_JOB_DIR},src:/opt/app/src \
---env PYTHONPATH=/opt/app/src \
+--env PYTHONPATH=/opt/app/src,CUDA_LAUNCH_BLOCKING=1 \
 ./cluster/diffusion-brain.sif \
 bash -c "python ${SLURM_SUBMIT_DIR}/src/diffusion_brain/scripts/train.py --config ${SLURM_SUBMIT_DIR}/src/diffusion_brain/configs/toy/config_train.yaml --jobid toy-cluster-${SLURM_JOB_ID}"
 #bash -c "python -m diffusion_brain.scripts.train --config ${SLURM_SUBMIT_DIR}/src/diffusion_brain/configs/mnist/config_train.yaml --jobid toy-cluster"

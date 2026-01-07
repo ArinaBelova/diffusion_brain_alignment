@@ -7,8 +7,8 @@ diffusion:
   T: 1.0 #1000.0
   eps: 1.e-5 # time epsilon for the reverse timegrid
 
-  beta_min: 0.01 #1.e-3 #1.e-4 # 0.01
-  beta_max: 10.0 #1.e-2 #0.02 # 10.0
+  beta_min: 1.e-4 #0.01 #1.e-3 #1.e-4 # 0.01
+  beta_max: 0.02 #10.0 #1.e-2 #0.02 # 10.0
 
   max_diffusivity: ~
 
@@ -47,7 +47,7 @@ optim:
   # patience: 50
 
 train:
-  epochs: 200 #2000
+  steps: 20000 #2000
   image_size: 32
   batch_size: 128
   dataset_size: 60000

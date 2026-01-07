@@ -3,12 +3,12 @@ wandb:
 
 diffusion:
   diffusion_type: vp
-  timesteps: 100
+  timesteps: 1000
   T: 1.0 #1000.0
   eps: 1.e-5 # time epsilon for the reverse timegrid
 
-  beta_min: 1.e-3 #1.e-4 # 0.01
-  beta_max: 1.e-2 #0.02 # 10.0
+  beta_min: 1.e-4 # 0.01
+  beta_max: 0.02 # 10.0
 
   max_diffusivity: ~
 
@@ -24,7 +24,7 @@ data:
 model:
   name: toy-mlp #gfdm-unet #unet-diffusers # unet
   input_size: 2
-  num_classes: 1 #8
+  num_classes: 8
   c_in: 2 
   c_out: 2 
   time_dim: 256
@@ -46,10 +46,10 @@ optim:
   # patience: 50
 
 train:
-  epochs: 200 #2000
+  steps: 20000 #2000
   image_size: 1 #32
-  batch_size: 128
-  dataset_size: 60000
+  batch_size: 256
+  dataset_size: 600000
   # for toy dataset:
   label_type: index
 
@@ -65,4 +65,4 @@ validation:
   batch_size: 128 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
   n_steps: 100
   guidance_scale: 2.0 #0.8
-  label_to_generate: 1
+  label_to_generate: 3

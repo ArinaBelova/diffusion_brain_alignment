@@ -51,9 +51,12 @@ class StandardDiffusion(ABC, nn.Module):
         return torch.exp(self.integral(t))
     
     def brown_moments(self, x0, t):
+        # print("x0 shape ", x0.shape)
+        # print("self.mean_scale(t) shape ", self.mean_scale(t).shape)
+        dim_diff = len(x0.shape) - len(t.shape)
         return (
-            self.mean_scale(t)[:, None, None, None] * x0,
-            torch.sqrt(self.var(t))[:, None, None, None],
+            self.mean_scale(t)[(...,) + (None,) * dim_diff] * x0,
+            torch.sqrt(self.var(t)[(...,) + (None,) * dim_diff]),
         )
     
     @abstractmethod
@@ -201,7 +204,7 @@ def generate_samples(num_samples: int,
         dim_x = (args.model.c_in, args.model.input_size, args.model.input_size)
 
     x_T = torch.randn(size=(num_samples, *dim_x), device=device) #.expand(-1, -1, 4)
-    
+    print("x_T shape: ", x_T.shape)
     _, x_0 = run_reverse_sde(
         diffusion_process=diffusion_process,
         x_0=x_T, # .cpu().numpy()
@@ -262,7 +265,7 @@ class VESDE(StandardDiffusion):
         return 0 * t 
 
     def var(self, t):
-        return (self.sigma_min ** 2) * ((self.sigma_max / self.sigma_min) ** (2 * t))
+        return (self.sigma_min ** 2) * ((self.sigma_max / self.sigma_min) ** (2 * t)) 
 
 
 class VPSDE(StandardDiffusion):

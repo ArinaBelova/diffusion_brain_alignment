@@ -42,6 +42,7 @@ def set_learning_rate_scheduler(optimizer, args):
         print("Using OneCycleLR scheduler")
         #print("num of total steps: ", args.train.epochs * math.ceil(args.train.dataset_size/args.train.batch_size))
         scheduler = optim.lr_scheduler.OneCycleLR(optimizer=optimizer, max_lr=args.optim.max_lr, 
-                                                   total_steps=args.train.epochs * math.ceil(args.train.dataset_size / args.train.batch_size))
+                                                   total_steps=args.train.steps)
+                                                   #total_steps=args.train.epochs * math.ceil(args.train.dataset_size / args.train.batch_size))
     
     return scheduler

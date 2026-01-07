@@ -7,6 +7,8 @@ import wandb
 import numpy as np
 import matplotlib.pyplot as plt
 import datetime
+import random
+import itertools
 
 from diffusion_brain.utils.grad_updaters import set_loss_function, set_optimiser, set_learning_rate_scheduler 
 from diffusion_brain.models import set_model
@@ -46,7 +48,9 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
 
     # TODO: check this! here I simply need to estimate p_{0t}(x(t)|x(0)) mean and variance and use them to compute the true score
     true_score = -noise
-    
+    mu, std = diffusion_process.brown_moments(x, t)
+    x_t = mu + std * noise
+
     # if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
     #     #print(x.shape, noise.shape, label.shape)
     #     predicted_score = score_fn(x, t * 1000, label, return_dict=False)[0] # multiply by 1000 so time embedding works better
@@ -69,71 +73,76 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
         masked_labels = label * (1 - mask) + (-1 * mask) # use -1 as the empty label
         masked_labels = masked_labels.long()
         encoder_hidden_states = torch.zeros(x.shape[0], 1, 128, device=x.device) # 128 is cross attention dimension
-        predicted_score = score_fn(x, t, encoder_hidden_states=encoder_hidden_states, class_labels=masked_labels).sample    #  * 1000
+        predicted_score = score_fn(x_t, t, encoder_hidden_states=encoder_hidden_states, class_labels=masked_labels).sample    #  * 1000
     else:
         masked_labels = label * (1 - mask) + (args.model.num_classes * mask) # use num classes as the empty label
         masked_labels = masked_labels.long()
-        predicted_score = score_fn(x, t, masked_labels) #  * 1000
+        predicted_score = score_fn(x_t, t, masked_labels) #  * 1000
 
     #print(f"predicted score {predicted_score} \t \t \t true score {true_score}")
     loss = loss_function(predicted_score, true_score)
  
     return loss
 
-def train_epoch(epoch, model, optimizer, lr_scheduler, train_dataloader, loss_function, diffusion_process, args)-> torch.Tensor:
+def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_function, diffusion_process, args):
     model.train().to(DEVICE)
-    avg_loss = 0.0
+    # TODO: check why data type changes from float64 to DoubleTensor somewhere here...
+    # data = train_dataloader.dataset[idx][0].float().to(DEVICE)
+    # label = train_dataloader.dataset[idx][1].to(DEVICE) # as label is given by default as (b, 1)
+    
+    data, label = next(train_dataloader)
+    data = data.float().to(DEVICE)
+    label = label.to(DEVICE) # as label is given by default as (b, 1)
 
-    for idx, (data, label) in enumerate(train_dataloader):
-        # TODO: check why data type changes from float64 to DoubleTensor somewhere here...
-        data = data.float().to(DEVICE)
-        label = label.to(DEVICE) # as label is given by default as (b, 1)
+    b, *_ = data.shape
+    # sample a random timepoints for the backward process
+    #t = torch.rand((b, ), device=data.device)
+    t = (torch.rand(b, device=data.device) * (args.diffusion.T - args.diffusion.eps) + args.diffusion.eps)
+    noise = torch.randn_like(data, device=data.device)
 
-        b, *_ = data.shape
-        # sample a random timepoints for the backward process
-        #t = torch.rand((b, ), device=data.device)
-        t = (torch.rand(b, device=data.device) * (args.diffusion.T - args.diffusion.eps) + args.diffusion.eps)
-        noise = torch.randn_like(data, device=data.device)
+    # run a backward SDE with this random timeline 
+    loss = one_step_score_estimation(data, t, noise, label, model, loss_function, diffusion_process, args)
 
-        # run a backward SDE with this random timeline 
-        loss = one_step_score_estimation(data, t, noise, label, model, loss_function, diffusion_process, args)
-        
-        avg_loss += loss.item()
-        step = epoch * len(train_dataloader) + idx
+    #step = epoch * len(train_dataloader) + idx
 
-        # optimise the model
-        loss.backward()
-        #print(loss.item())
+    # optimise the model
+    optimizer.zero_grad()
 
-        # # TODO: check gradients here!
-        # for name, parameters in model.named_parameters():
-        #     print(param.grad.sum())
+    loss.backward()
+    #print(loss.item())
 
-        # Clip gradient norm
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-        optimizer.step()
-        optimizer.zero_grad()
-        # TODO: check how lr scheduler is usually updated and whether we do 1 additional step 
-        #print("step #{}, loss: {:.6f}".format(step, loss.item()))
-        lr_scheduler.step()
-        wandb.log({"train/loss": loss,
-                   "train/lr": lr_scheduler.get_last_lr()[0]},
-                    step=step)
+    # # TODO: check gradients here!
+    # for name, parameters in model.named_parameters():
+    #     print(param.grad.sum())
+
+    # Clip gradient norm
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+    optimizer.step()
+    # TODO: check how lr scheduler is usually updated and whether we do 1 additional step 
+    #print("step #{}, loss: {:.6f}".format(step, loss.item()))
+    lr_scheduler.step()
+    wandb.log({"train/loss": loss,
+                "train/lr": lr_scheduler.get_last_lr()[0]},
+                step=step)
     
     # report average loss of current epoch to wandb:
-    avg_loss /= len(train_dataloader)
+    # avg_loss /= len(train_dataloader)
 
-    return avg_loss
+    # return avg_loss
 
-def visualise_results(generated_samples, epoch, args):
+def visualise_results(generated_samples, step, args):
     if args.data.data_name == "toy":
         # for toy data we need to plot scatter plots
         generated_samples = generated_samples.cpu().numpy()
+
+        mean = np.mean(generated_samples, axis=0)
+        print("Generated samples shape: ", generated_samples.shape)
+        print("Generated samples mean:", mean)
         fig, ax = plt.subplots()
 
         ax.scatter(generated_samples[:, 0], generated_samples[:, 1], alpha=0.6)
         
-        ax.set_title(f"Generated Samples label {args.validation.label_to_generate} at Epoch {epoch}")
+        #ax.set_title(f"Generated Samples label {args.validation.label_to_generate} at step {step} with mean {mean[0]:.2f}, {mean[1]:.2f}")
         wandb.log({"validation_sample": wandb.Image(fig)}) #, step=epoch)
         plt.close(fig)
     else:    
@@ -154,23 +163,24 @@ def train(args):
 
     # get the dataloaders, it seems that we don't need to have a validation dataloader as we;re in the pure diffusion setting and not in bridges
     train_dataloader, _ = get_dataloader(args)
+    train_dataloader = itertools.cycle(train_dataloader)
 
     print(f"We're getting diffusion type {args.diffusion.diffusion_type}", flush=True)
     diffusion_process = diffusivity.get_diffusion(args, device=DEVICE)
     print(f"beta min is {diffusion_process.beta_min}, beta_max is {diffusion_process.beta_max}", flush=True)
 
-    for epoch in range(args.train.epochs):
-        print(f"Epoch {epoch+1}/{args.train.epochs} started.", flush=True)
-        avg_epoch_loss = train_epoch(epoch, model, optimizer, lr_scheduler, train_dataloader, loss_function, diffusion_process, args)
-        print(f"Epoch {epoch+1} completed. Average Loss: {avg_epoch_loss:.6f}", flush=True)
-        wandb.log({"train/avg_epoch_loss": avg_epoch_loss}) #, step=epoch)
+    for step in range(args.train.steps):
+        print(f"Step {step+1}/{args.train.steps} started.", flush=True)
+        train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_function, diffusion_process, args)
+        #print(f"Epoch {epoch+1} completed. Average Loss: {avg_epoch_loss:.6f}", flush=True)
+        #wandb.log({"train/avg_epoch_loss": avg_epoch_loss}) #, step=epoch)
         
         # TODO: implement validation and display of generated images to wandb every eval_freq epochs 
-        if epoch % args.validation.eval_freq == 0:
-            print(f"Validation at epoch {epoch+1}", flush=True)
+        if step % args.validation.eval_freq == 0:
+            print(f"Validation at step {step+1}", flush=True)
             generated_samples = diffusivity.generate_samples(args.validation.batch_size, model, diffusion_process, args, device=DEVICE)
             # TODO: add other image statistics later 
-            visualise_results(generated_samples, epoch, args)
+            visualise_results(generated_samples, step, args)
             
     print("Training completed.", flush=True)
 
