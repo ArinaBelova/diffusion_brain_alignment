@@ -150,8 +150,8 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
     # time_grid = time_grid.astype(np.float64)
 
     x_traj = [x_0]
-    y_target = torch.tensor([label]).long().repeat(n_traj, 1).to(device) #(label + np.zeros((n_traj, 1))).long()
-    y_empty = torch.tensor([num_classes]).long().repeat(n_traj, 1).to(device) #num_classes + np.zeros((n_traj, 1)).long()
+    y_target = torch.tensor([label]).long().repeat(n_traj).to(device) # here was weird repeat(n_traj, 1), did I really need this extra dimension anywhere? #(label + np.zeros((n_traj, 1))).long()
+    y_empty = torch.tensor([num_classes]).long().repeat(n_traj).to(device) #num_classes + np.zeros((n_traj, 1)).long()
     
     # print("num_classes ", num_classes)
     # print("y target ", y_target.shape)
@@ -161,9 +161,11 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
         t = torch.tensor([time_grid[idx]]).to(device)
 
         determ_drift = f(x, t) * dt
+        #print("f(x, t) shape ", f(x, t).shape)
 
         z = torch.randn(n_traj, *dim_x).to(device) 
         diffusivity_sample = g(x, t) * torch.sqrt(torch.abs(dt)) * z 
+        #print("g(x, t) shape ", g(x, t).shape)
 
         #print("time t: ", t.shape) # (1000, 1000)
         # print(f"sqrt of the variance of the process: {torch.sqrt(diffusion_process.var(t))}", flush=True) # 0.0x values 
@@ -183,9 +185,16 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
                 score_cond = score_fn(x, t, y_target)
             score = ((1 - guidance_scale) * score_uncond + guidance_scale * score_cond) / torch.sqrt(diffusion_process.var(t))
 
-        next_step = x + determ_drift - g(x, t)**2 * score * dt + diffusivity_sample
-        #print(f"time {t} next_step: ", next_step) # (1000, 1000)
+        # print("x shape ", x.shape)
+        # print("t shape ", t.shape)
+        # print("score shape ", score.shape)
+        # print("determ_drift shape ", determ_drift.shape)
+        # print("diffusivity_sample shape ", diffusivity_sample.shape)
+        # print("g(x, t)**2  shape ", (g(x, t)**2).shape)
 
+
+        next_step = x + determ_drift - g(x, t)**2 * score * dt + diffusivity_sample
+        #print(f"time {t} next_step shape: ", next_step.shape) # (1000, 1000)
         x_traj.append(next_step)
     
     return torch.stack(x_traj), next_step
@@ -199,7 +208,7 @@ def generate_samples(num_samples: int,
     """Function to generate samples from the learned diffusion model"""
     # initial samples from p_T
     if args.data.data_name == "toy":
-        dim_x = (args.model.c_in, args.model.input_size)
+        dim_x = [args.model.input_size]
     else:
         dim_x = (args.model.c_in, args.model.input_size, args.model.input_size)
 

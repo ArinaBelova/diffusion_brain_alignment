@@ -25,8 +25,6 @@ model:
   name: toy-mlp #gfdm-unet #unet-diffusers # unet
   input_size: 2
   num_classes: 8
-  c_in: 2 
-  c_out: 2 
   time_dim: 256
   dropout_prob: 0.2 # label dropout in classifier-free training
   remove_deep_conv: false
@@ -47,7 +45,7 @@ optim:
 
 train:
   steps: 20000 #2000
-  image_size: 1 #32
+  image_size: 2 #32
   batch_size: 256
   dataset_size: 600000
   # for toy dataset:
@@ -62,7 +60,7 @@ train:
 
 validation:
   eval_freq: 10
-  batch_size: 128 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
+  batch_size: 256 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
   n_steps: 100
   guidance_scale: 2.0 #0.8
   label_to_generate: 3
