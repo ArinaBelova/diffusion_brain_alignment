@@ -7,8 +7,8 @@ diffusion:
   T: 1.0 #1000.0
   eps: 1.e-5 # time epsilon for the reverse timegrid
 
-  beta_min: 1.e-4 # 0.01
-  beta_max: 0.02 # 10.0
+  beta_min: 0.001 #1.e-4 # 0.01
+  beta_max: 1.0 #0.02 # 10.0
 
   max_diffusivity: ~
 
@@ -44,10 +44,10 @@ optim:
   # patience: 50
 
 train:
-  steps: 20000 #2000
+  steps: 2000 #2000
   image_size: 2 #32
   batch_size: 256
-  dataset_size: 600000
+  dataset_size: 60000
   # for toy dataset:
   label_type: index
 
@@ -59,8 +59,8 @@ train:
 #   label_to_generate: 8
 
 validation:
-  eval_freq: 10
+  eval_freq: 100
   batch_size: 256 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
   n_steps: 100
-  guidance_scale: 2.0 #0.8
+  guidance_scale: 10.0 #0.8
   label_to_generate: 3

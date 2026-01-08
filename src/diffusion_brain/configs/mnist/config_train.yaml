@@ -64,6 +64,6 @@ train:
 validation:
   eval_freq: 10
   batch_size: 128 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
-  n_steps: 1000
+  n_steps: 2000
   guidance_scale: 2.0 #0.8
   label_to_generate: 7

@@ -73,15 +73,26 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
         masked_labels = label * (1 - mask) + (-1 * mask) # use -1 as the empty label
         masked_labels = masked_labels.long()
         encoder_hidden_states = torch.zeros(x.shape[0], 1, 128, device=x.device) # 128 is cross attention dimension
+        print(x_t.shape, t.shape, masked_labels.shape, encoder_hidden_states.shape)
+        print(score_fn)
         predicted_score = score_fn(x_t, t, encoder_hidden_states=encoder_hidden_states, class_labels=masked_labels).sample    #  * 1000
     else:
-        masked_labels = label * (1 - mask) + (args.model.num_classes * mask) # use num classes as the empty label
+        masked_labels = label * (1 - mask) + (args.model.num_classes * mask) # use args.model.num_classes as the empty label due to MLP embedder not supporting -1
         masked_labels = masked_labels.long()
         predicted_score = score_fn(x_t, t, masked_labels) #  * 1000
 
+    ################DEBUG##################
+    predicted_score_cond = score_fn(x_t, t, masked_labels)
+    predicted_score_uncond = score_fn(x_t, t, torch.full_like(masked_labels, args.model.num_classes))
+    if torch.rand(1) < 0.01:
+        diff = (predicted_score_cond - predicted_score_uncond).abs().mean()
+        print(f"Conditional-Unconditional diff: {diff:.6f} | std of the process is {std.mean()} | Loss will use: {predicted_score_cond.abs().mean():.4f}")
+        if diff < 0.001:
+            print("⚠️ WARNING: Model outputs same score regardless of label!")
+    #######################################
     #print(f"predicted score {predicted_score} \t \t \t true score {true_score}")
     loss = loss_function(predicted_score, true_score)
- 
+    
     return loss
 
 def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_function, diffusion_process, args):
@@ -142,7 +153,9 @@ def visualise_results(generated_samples, step, args):
 
         ax.scatter(generated_samples[:, 0], generated_samples[:, 1], alpha=0.6)
         
-        #ax.set_title(f"Generated Samples label {args.validation.label_to_generate} at step {step} with mean {mean[0]:.2f}, {mean[1]:.2f}")
+        ax.set_title(f"label {args.validation.label_to_generate} at step {step} with mean {mean[0]:.2f}, {mean[1]:.2f} and guidance_scale={args.validation.guidance_scale}")
+        ax.set_xlim(-20, 20)
+        ax.set_ylim(-20, 20)
         wandb.log({"validation_sample": wandb.Image(fig)}) #, step=epoch)
         plt.close(fig)
     else:    

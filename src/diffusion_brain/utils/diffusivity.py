@@ -142,49 +142,44 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
     # don't start with t = 0 to avoid division by zero in score function
     time_grid = torch.linspace(T, epsilon, n_steps + 1).to(device)
     dt = time_grid[1] - time_grid[0]
-
-    # When we thought the precision was the problem:
-    # reverse_x_0 = reverse_x_0.astype(np.float64)
-    # forward_x_0 = forward_x_0.astype(np.float64)
-    # injected_noises = injected_noises.astype(np.float64)
-    # time_grid = time_grid.astype(np.float64)
-
     x_traj = [x_0]
     y_target = torch.tensor([label]).long().repeat(n_traj).to(device) # here was weird repeat(n_traj, 1), did I really need this extra dimension anywhere? #(label + np.zeros((n_traj, 1))).long()
-    y_empty = torch.tensor([num_classes]).long().repeat(n_traj).to(device) #num_classes + np.zeros((n_traj, 1)).long()
     
-    # print("num_classes ", num_classes)
-    # print("y target ", y_target.shape)
-    # print("y empty ", y_empty.shape)
+    if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
+        y_empty = torch.tensor([-1]).long().repeat(n_traj).to(device) 
+    else:
+        y_empty = torch.tensor([num_classes]).long().repeat(n_traj).to(device) 
+
+        
     for idx, t in enumerate(time_grid):
         x = x_traj[idx]
-        t = torch.tensor([time_grid[idx]]).to(device)
-
+        t = torch.tensor([t]).to(device)
         determ_drift = f(x, t) * dt
-        #print("f(x, t) shape ", f(x, t).shape)
-
         z = torch.randn(n_traj, *dim_x).to(device) 
         diffusivity_sample = g(x, t) * torch.sqrt(torch.abs(dt)) * z 
-        #print("g(x, t) shape ", g(x, t).shape)
-
-        #print("time t: ", t.shape) # (1000, 1000)
-        # print(f"sqrt of the variance of the process: {torch.sqrt(diffusion_process.var(t))}", flush=True) # 0.0x values 
 
         if guidance_scale == 1.0:
             if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
                 score = score_fn(x, t, y_target).sample / torch.sqrt(diffusion_process.var(t))
             else:
-                score = score_fn(x, t, y_target).sample / torch.sqrt(diffusion_process.var(t))
+                score = score_fn(x, t, y_target) / torch.sqrt(diffusion_process.var(t))
         else:
-            # print("x shape", x.shape, "t shape", t.shape, "y_target shape", y_target.shape, "y_empty shape", y_empty.shape)
             if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
                 score_uncond = score_fn(x, t, class_labels=y_empty).sample
                 score_cond = score_fn(x, t, class_labels=y_target).sample
             else:
                 score_uncond = score_fn(x, t, y_empty)
                 score_cond = score_fn(x, t, y_target)
+            
+            # DEBUG: Check if scores differ by label
+            if idx == 0:  # Only at first timestep
+                diff_norm = (score_cond - score_uncond).norm()
+                print(f"t={t.item():.3f} | label={y_target[0].item()} | "
+                    f"score_cond norm={score_cond.norm():.4f} | "
+                    f"score_uncond norm={score_uncond.norm():.4f} | "
+                    f"difference norm={diff_norm:.4f}")
+        
             score = ((1 - guidance_scale) * score_uncond + guidance_scale * score_cond) / torch.sqrt(diffusion_process.var(t))
-
         # print("x shape ", x.shape)
         # print("t shape ", t.shape)
         # print("score shape ", score.shape)
@@ -193,7 +188,7 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
         # print("g(x, t)**2  shape ", (g(x, t)**2).shape)
 
 
-        next_step = x + determ_drift - g(x, t)**2 * score * dt + diffusivity_sample
+        next_step = x + (determ_drift - g(x, t)**2 * score) * dt + diffusivity_sample
         #print(f"time {t} next_step shape: ", next_step.shape) # (1000, 1000)
         x_traj.append(next_step)
     
