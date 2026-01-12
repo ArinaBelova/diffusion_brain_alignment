@@ -9,3 +9,6 @@ wandb*
 output_logs/*
 runs/*
 cluster/*
+outputs/*
+data/*
+model_outputs/*

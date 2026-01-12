@@ -113,17 +113,14 @@ def run_forward_sde(process: StandardDiffusion,
         #Save step:
         x_traj.append(next_step)
 
-    return torch.stack(x_traj, dim = 0), time_grid #torch.stack(x_traj, dim = 0), time_grid   
+    return torch.stack(x_traj, dim = 0), time_grid 
 
 @torch.inference_mode()
 def run_reverse_sde(diffusion_process: StandardDiffusion,
-            x_0: torch.Tensor, #np.ndarray,
+            x_0: torch.Tensor,
             score_fn: Callable,
-            # forward_x_0: np.ndarray,
-            # t_0: float = 0.0, 
             T: float = 1.0, 
             n_steps: int = 1000,
-            # injected_noises = None,
             epsilon=1e-3,
             guidance_scale: float = 1.0,
             label: int = 1,
@@ -143,43 +140,55 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
     time_grid = torch.linspace(T, epsilon, n_steps + 1).to(device)
     dt = time_grid[1] - time_grid[0]
     x_traj = [x_0]
-    y_target = torch.tensor([label]).long().repeat(n_traj).to(device) # here was weird repeat(n_traj, 1), did I really need this extra dimension anywhere? #(label + np.zeros((n_traj, 1))).long()
-    
-    if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
-        y_empty = torch.tensor([-1]).long().repeat(n_traj).to(device) 
-    else:
-        y_empty = torch.tensor([num_classes]).long().repeat(n_traj).to(device) 
-
+    # I preliminary removed all the .long() casting to avoid CUDA crash
+    y_target = torch.tensor([label]).repeat(n_traj).to(device) # here was weird repeat(n_traj, 1), did I really need this extra dimension anywhere? #(label + np.zeros((n_traj, 1))).long()
+    y_empty = torch.tensor([num_classes]).repeat(n_traj).to(device) 
         
     for idx, t in enumerate(time_grid):
         x = x_traj[idx]
         t = torch.tensor([t]).to(device)
-        determ_drift = f(x, t) * dt
+        determ_drift = f(x, t)
         z = torch.randn(n_traj, *dim_x).to(device) 
         diffusivity_sample = g(x, t) * torch.sqrt(torch.abs(dt)) * z 
 
         if guidance_scale == 1.0:
             if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
-                score = score_fn(x, t, y_target).sample / torch.sqrt(diffusion_process.var(t))
+                encoder_hidden_states = torch.zeros(x.shape[0], 1, args.model.cross_attention_dim, device=x.device)
+                score = score_fn(x, t, encoder_hidden_states = encoder_hidden_states, class_labels = y_target).sample / torch.sqrt(diffusion_process.var(t))
             else:
                 score = score_fn(x, t, y_target) / torch.sqrt(diffusion_process.var(t))
         else:
             if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
-                score_uncond = score_fn(x, t, class_labels=y_empty).sample
-                score_cond = score_fn(x, t, class_labels=y_target).sample
+
+                #######################
+                t = t * 999
+                #######################
+                
+                encoder_hidden_states = torch.zeros(x.shape[0], 1, args.model.cross_attention_dim, device=x.device)
+
+                # print("y_empty:", y_empty.device, y_empty.shape, y_empty.dtype)
+                # print("y_target:", y_target.device, y_target.shape, y_target.dtype)
+                # print("x: ", x.device, x.shape, x.dtype)
+                # print("t: ", t.device, t.shape, t.dtype)
+                # print("encoder_hidden_states: ", encoder_hidden_states.device, encoder_hidden_states.shape, encoder_hidden_states.dtype)
+
+                score_uncond = score_fn(x, t, encoder_hidden_states = encoder_hidden_states, class_labels=y_empty).sample
+                score_cond = score_fn(x, t, encoder_hidden_states = encoder_hidden_states, class_labels=y_target).sample
             else:
                 score_uncond = score_fn(x, t, y_empty)
                 score_cond = score_fn(x, t, y_target)
             
-            # DEBUG: Check if scores differ by label
+            score = ((1 - guidance_scale) * score_uncond + guidance_scale * score_cond) / torch.sqrt(diffusion_process.var(t))
+
+            # DEBUG: Check if scores differ by label#################################
             if idx == 0:  # Only at first timestep
                 diff_norm = (score_cond - score_uncond).norm()
                 print(f"t={t.item():.3f} | label={y_target[0].item()} | "
                     f"score_cond norm={score_cond.norm():.4f} | "
                     f"score_uncond norm={score_uncond.norm():.4f} | "
                     f"difference norm={diff_norm:.4f}")
-        
-            score = ((1 - guidance_scale) * score_uncond + guidance_scale * score_cond) / torch.sqrt(diffusion_process.var(t))
+            ##################################################################
+            
         # print("x shape ", x.shape)
         # print("t shape ", t.shape)
         # print("score shape ", score.shape)
@@ -189,7 +198,6 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
 
 
         next_step = x + (determ_drift - g(x, t)**2 * score) * dt + diffusivity_sample
-        #print(f"time {t} next_step shape: ", next_step.shape) # (1000, 1000)
         x_traj.append(next_step)
     
     return torch.stack(x_traj), next_step
@@ -207,7 +215,10 @@ def generate_samples(num_samples: int,
     else:
         dim_x = (args.model.c_in, args.model.input_size, args.model.input_size)
 
-    x_T = torch.randn(size=(num_samples, *dim_x), device=device) #.expand(-1, -1, 4)
+    noise = torch.randn(size=(num_samples, *dim_x), device=device)
+    mu, std = diffusion_process.brown_moments(torch.zeros(num_samples, *dim_x).to(device), diffusion_process.T)
+    x_T = mu + std * noise
+
     print("x_T shape: ", x_T.shape)
     _, x_0 = run_reverse_sde(
         diffusion_process=diffusion_process,
@@ -222,6 +233,7 @@ def generate_samples(num_samples: int,
         device=device,
         args=args
     )
+
     return x_0
 
 class VESDE(StandardDiffusion):
@@ -293,23 +305,23 @@ class VPSDE(StandardDiffusion):
             "beta_max", torch.as_tensor(torch.tensor([args.diffusion.beta_max]), device=self.device)
         )
 
-    # TODO: decide if we use this beta_t or calculate beta in mu.g ourselves
     def beta(self, t):
         return self.beta_min + t * (self.beta_max - self.beta_min)
     
     def mu(self, t):
-        return -0.5 * self.beta(t) #(self.beta_max - self.beta_min) * torch.ones_like(t) 
+        return -0.5 * self.beta(t)
     
     def f(self, x, t):
         return self.mu(t) * x
 
     def g(self, x, t):
-        return torch.sqrt(self.beta(t)) #torch.sqrt(self.beta_max - self.beta_min) * torch.ones_like(t)
+        return torch.sqrt(self.beta(t))
 
     # TODO check this!!!
     def integral(self, t):
         return -0.25 * t ** 2 * (self.beta_max - self.beta_min) - 0.5 * t * self.beta_min
-        #return -0.5 * torch.cumsum(self.beta_t(t), dim=0) * (t[1] - t[0]) 
 
     def var(self, t):
-        return 1 - torch.exp(-self.beta(t))              
+        scale = -0.5 * (t ** 2) * (self.beta_max - self.beta_min) - t * self.beta_min
+        return 1 - torch.exp(scale)
+        #return 1 - torch.exp(-self.beta(t))              

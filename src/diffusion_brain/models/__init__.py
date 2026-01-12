@@ -3,6 +3,8 @@ from diffusion_brain.models.dit import DiT
 from diffusion_brain.models.gfdm_models.unet import GFDM_UNetModel
 from diffusion_brain.models.mlp import ToyDiffusionMLP
 
+import torch 
+
 # for MNIST case as need to be careful with dimensions of blocks in UNet
 # don't have time to think about a better way now
 from diffusers import UNet1DModel, UNet2DModel, UNet2DConditionModel
@@ -32,8 +34,14 @@ def set_model(args):
                 "UpBlock2D",
             ),
             #norm_num_groups=8,
-            cross_attention_dim=128, 
-            num_class_embeds=args.model.num_classes)
+            # cross_attention_dim=args.model.cross_attention_dim, # I don't want to have cross-attention, may come handy when I do the full project
+            cross_attention_dim=args.model.cross_attention_dim,
+            num_class_embeds=args.model.num_classes + 1)
+        
+        # playing around to figure out how to do conditioning on this model:
+        # result@ don't change this class embedding!
+        # model.class_embedding = torch.nn.Embedding(args.model.num_classes + 1, args.model.cross_attention_dim)
+
     elif args.model.name == "gfdm-unet":
         print("Setting GFDM UNet model")
         model = GFDM_UNetModel(
@@ -43,7 +51,7 @@ def set_model(args):
             out_channels=args.model.c_out,
             num_res_blocks=1,
             attention_resolutions=(4,2),
-            num_classes=args.model.num_classes,
+            num_classes=args.model.num_classes + 1,
             channel_mult=(1,2,4), # given by default but in larger resultion
             dims=2, # 2 for mnist
             dropout=0, # resnet dropout prob, not classifier-free dropout

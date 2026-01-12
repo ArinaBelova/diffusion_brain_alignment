@@ -7,7 +7,8 @@ def get_toy_dataloader(args):
         n_samples=args.train.dataset_size,
         n_centers=args.model.num_classes, 
         random_state=42, 
-        label_type=args.train.label_type  # 'index' or 'coordinates'
+        label_type=args.train.label_type,  # 'index' or 'coordinates'
+        radius=args.data.radius,
     )
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.train.batch_size, shuffle=True)
     return dataloader, None
@@ -39,7 +40,7 @@ class ToyDataset(Dataset):
     # torch.from_numpy(self.data[idx]).long(), torch.from_numpy(self.labels[idx]).long()
 
 class EightGaussianConditional(ToyDataset):
-    def __init__(self, n_samples, n_centers, std=0.5, radius=4.0, random_state=None, label_type='index'):
+    def __init__(self, n_samples, n_centers, std=0.5, radius=20.0, random_state=None, label_type='index'):
         """
         n_samples: number of datapoints/Gaussians
         std: standard deviation of each Gaussian
@@ -51,7 +52,7 @@ class EightGaussianConditional(ToyDataset):
         self.std = std
         self.radius = radius
         self.n_centers = n_centers
-        super().__init__(n_samples, random_state=random_state)
+        super().__init__(n_samples, normalize=False, random_state=random_state)
 
     def sample_data(self):
         # ---------------------------------------------------
