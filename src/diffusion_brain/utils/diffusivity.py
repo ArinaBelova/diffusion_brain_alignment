@@ -161,7 +161,7 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
             if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
 
                 #######################
-                t = t * 999
+                time_unet = t * 999
                 #######################
                 
                 encoder_hidden_states = torch.zeros(x.shape[0], 1, args.model.cross_attention_dim, device=x.device)
@@ -172,8 +172,8 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
                 # print("t: ", t.device, t.shape, t.dtype)
                 # print("encoder_hidden_states: ", encoder_hidden_states.device, encoder_hidden_states.shape, encoder_hidden_states.dtype)
 
-                score_uncond = score_fn(x, t, encoder_hidden_states = encoder_hidden_states, class_labels=y_empty).sample
-                score_cond = score_fn(x, t, encoder_hidden_states = encoder_hidden_states, class_labels=y_target).sample
+                score_uncond = score_fn(x, time_unet, encoder_hidden_states = encoder_hidden_states, class_labels=y_empty).sample
+                score_cond = score_fn(x, time_unet, encoder_hidden_states = encoder_hidden_states, class_labels=y_target).sample
             else:
                 score_uncond = score_fn(x, t, y_empty)
                 score_cond = score_fn(x, t, y_target)
@@ -181,12 +181,12 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
             score = ((1 - guidance_scale) * score_uncond + guidance_scale * score_cond) / torch.sqrt(diffusion_process.var(t))
 
             # DEBUG: Check if scores differ by label#################################
-            if idx == 0:  # Only at first timestep
-                diff_norm = (score_cond - score_uncond).norm()
-                print(f"t={t.item():.3f} | label={y_target[0].item()} | "
-                    f"score_cond norm={score_cond.norm():.4f} | "
-                    f"score_uncond norm={score_uncond.norm():.4f} | "
-                    f"difference norm={diff_norm:.4f}")
+            # if idx == 0:  # Only at first timestep
+            #     diff_norm = (score_cond - score_uncond).norm()
+            #     print(f"t={t.item():.3f} | label={y_target[0].item()} | "
+            #         f"score_cond norm={score_cond.norm():.4f} | "
+            #         f"score_uncond norm={score_uncond.norm():.4f} | "
+            #         f"difference norm={diff_norm:.4f}")
             ##################################################################
             
         # print("x shape ", x.shape)
@@ -195,7 +195,6 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
         # print("determ_drift shape ", determ_drift.shape)
         # print("diffusivity_sample shape ", diffusivity_sample.shape)
         # print("g(x, t)**2  shape ", (g(x, t)**2).shape)
-
 
         next_step = x + (determ_drift - g(x, t)**2 * score) * dt + diffusivity_sample
         x_traj.append(next_step)
@@ -219,7 +218,6 @@ def generate_samples(num_samples: int,
     mu, std = diffusion_process.brown_moments(torch.zeros(num_samples, *dim_x).to(device), diffusion_process.T)
     x_T = mu + std * noise
 
-    print("x_T shape: ", x_T.shape)
     _, x_0 = run_reverse_sde(
         diffusion_process=diffusion_process,
         x_0=x_T, # .cpu().numpy()
@@ -234,7 +232,7 @@ def generate_samples(num_samples: int,
         args=args
     )
 
-    return x_0
+    return x_0 # * 255 as I don't really know what scale the model learned...
 
 class VESDE(StandardDiffusion):
 

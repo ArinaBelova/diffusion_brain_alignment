@@ -40,7 +40,7 @@ class ToyDataset(Dataset):
     # torch.from_numpy(self.data[idx]).long(), torch.from_numpy(self.labels[idx]).long()
 
 class EightGaussianConditional(ToyDataset):
-    def __init__(self, n_samples, n_centers, std=0.5, radius=20.0, random_state=None, label_type='index'):
+    def __init__(self, n_samples, n_centers, std=0.1, radius=20.0, random_state=None, label_type='index'):
         """
         n_samples: number of datapoints/Gaussians
         std: standard deviation of each Gaussian
@@ -49,7 +49,7 @@ class EightGaussianConditional(ToyDataset):
                     'coordinates' for center coordinates as labels.
         """
         self.label_type = label_type
-        self.std = std
+        self.std = radius / 40 # Scale std with radius
         self.radius = radius
         self.n_centers = n_centers
         super().__init__(n_samples, normalize=False, random_state=random_state)

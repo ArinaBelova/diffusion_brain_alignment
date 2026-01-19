@@ -3,11 +3,10 @@ wandb:
 
 diffusion:
   diffusion_type: vp
-  timesteps: 1000
   T: 1.0 #1000.0
   eps: 1.e-3 # time epsilon for the reverse timegrid
-  beta_min: 0.1 #0.001 #1.e-4 # 0.01
-  beta_max: 20.0 #1.0 #0.02 # 10.0
+  beta_min: 0.1 #0.01 #0.1 
+  beta_max: 20.0 #2.0 #20.0
 
   max_diffusivity: ~
 
@@ -20,7 +19,7 @@ diffusion:
 
 data:
   data_name: toy 
-  radius: 4.0
+  radius: 1.0
 
 # need to wire up the model arguments' with UNet class definition
 model:
@@ -39,7 +38,7 @@ optim:
   weight_decay: 1.e-3
   lr: 1.e-4
   scheduler_name: onecycle
-  max_lr: 1.e-2
+  max_lr: 1.e-3
 
   # for plateau:
   # min_lr: 1e-6

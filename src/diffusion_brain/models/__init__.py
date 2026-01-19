@@ -47,9 +47,9 @@ def set_model(args):
         model = GFDM_UNetModel(
             image_size=args.model.input_size,
             in_channels=args.model.c_in,
-            model_channels=8, # 32
+            model_channels=64, # 32
             out_channels=args.model.c_out,
-            num_res_blocks=1,
+            num_res_blocks=3,
             attention_resolutions=(4,2),
             num_classes=args.model.num_classes + 1,
             channel_mult=(1,2,4), # given by default but in larger resultion
@@ -60,9 +60,7 @@ def set_model(args):
         print("Setting Toy Diffusion MLP model")
         model = ToyDiffusionMLP(
             data_dim=args.model.input_size,
-            # hidden_dim=args.model.hidden_dim,
             num_classes=args.model.num_classes,
-            # num_blocks=args.model.num_blocks
         )        
         
     # UNet1D does not have num_class_embeds parameter    
