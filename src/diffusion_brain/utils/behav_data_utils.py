@@ -1,0 +1,109 @@
+# Courtesy of: https://github.com/adriendoerig/visuo_llm/blob/main/src/nsd_visuo_semantics/utils/nsd_get_data_light.py
+
+import os 
+import numpy as np
+import pandas as pd
+
+
+def read_behavior(behav_data_root, subject, session_index, trial_index=[]):
+    """read_behavior [summary]
+
+    Parameters
+    ----------
+    subject : str
+        subject identifier, such as 'subj01'
+    session_index : int
+        which session, counting from 0
+    trial_index : list, optional
+        which trials from this session's behavior to return, by default [], which returns all trials
+
+    Returns
+    -------
+    pandas DataFrame
+        DataFrame containing the behavioral information for the requested trials
+    """
+    behavior_file = os.path.join(
+        behav_data_root, f"{subject}", "behav", "responses.tsv"
+    )
+
+    behavior = pd.read_csv(behavior_file, delimiter="\t")
+    print(behavior.head())
+    # the behavior is encoded per run.
+    # I'm now setting this function up so that it aligns with the timepoints in the fmri files,
+    # i.e. using indexing per session, and not using the 'run' information.
+    session_behavior = behavior[behavior["SESSION"] == session_index]
+
+    if len(trial_index) == 0:
+        trial_index = slice(0, len(session_behavior))
+
+    return session_behavior.iloc[trial_index]
+
+def get_conditions(behav_data_root, sub, n_sessions):
+    """[summary]
+
+    Args:
+        behav_data_root ([type]): [description]
+        sub ([type]): [description]
+        n_sessions ([type]): [description]
+
+    Returns:
+        [type]: [description]
+    """
+
+    # read behaviour files for current subj
+    conditions = []
+
+    # loop over sessions
+    for ses in range(n_sessions):
+        ses_i = ses + 1
+        print(f"\r\t\tsub: {sub} fetching condition trials in session: {ses_i}", end='')
+
+        this_ses = np.asarray(read_behavior(behav_data_root, subject=sub, session_index=ses_i)["73KID"])
+
+        # these are the 73K ids.
+        valid_trials = [j for j, x in enumerate(this_ses)]
+
+        # this skips if say session 39 doesn't exist for subject x
+        # (see n_sessions comment above)
+        if valid_trials:
+            conditions.append(this_ses)
+
+    return np.array(conditions)
+
+def get_subject_conditions(behav_data_root, subj, n_sessions, keep_only_3repeats=True):
+
+    # extract conditions data.
+    # NOTES ABOUT HOW THIS WORKS:
+    # get_conditions returns a list with one item for each session the subject attended. Each of these items contains
+    # the NSD_ids for the images presented in that session. Then, we reshape all this into a single array, which now
+    # contains all the NSD_ids for the subject, in the order in which they were shown. Next, we create a boolean list of
+    # the same size as the conditions array, which assigns True to NSD_ids that are present 3x in the condition array.
+    # We use this boolean to create conditions_sampled, which now contains all NSD_indices for stimuli the subject has
+    # seen 3x. This list still contains the 3 repetitions of each stimulus, and is still in the stimulus presentation
+    # order. For example: [46003, 61883,   829, ...]
+    # Hence, we need to only keep each NSD_id once (since we compute everything on the average fMRI data over
+    # the 3 presentations), and we also need to order them in increasing NSD_id order (so that we can then easily
+    # for all subjects/models). Both of these desiderata are addressed by using np.unique (which sorts the unique idx).
+    # So sample contains the unique NSD_ids for that subject, in increasing order (e.g. [ 14,  28,  72, ...]).
+    # Importantly, the average betas loaded above are arranged in the same way, so that if we want to find the betas
+    # for NSD_id=72, we just need to find the idx of 72 in sample (in the present example: 2). Using this method, we can
+    # find the avg_betas corresponding to the shared 515 images as done below with subj_indices_515 (hint: the trick to
+    # go from an ordered list of nsd_ids to finding the idx as described above is to use enumerate).
+    # For example sample[subj_indices_515[0]] = conditions_515[0].
+
+    # extract conditions data
+    conditions = get_conditions(behav_data_root, subj, n_sessions)
+    # we also need to reshape conditions to be ntrials x 1
+    conditions = np.asarray(conditions).ravel()
+    if keep_only_3repeats:
+        # then we find the valid trials for which we do have 3 repetitions.
+        conditions_bool = [True if np.sum(conditions == x) == 3 else False for x in conditions]
+    else:
+        conditions_bool = [True for x in conditions]
+    # and identify those.
+    conditions_sampled = conditions[conditions_bool]
+    # find the subject's condition list (sample pool)
+    # this sample is the same order as the betas
+    sample = np.unique(conditions[conditions_bool])
+
+    return conditions, conditions_sampled, sample

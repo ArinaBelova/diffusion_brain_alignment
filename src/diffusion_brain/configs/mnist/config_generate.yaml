@@ -1,0 +1,39 @@
+wandb:
+  project_name: generate-conditional-diffusion-mnist
+
+diffusion:
+  diffusion_type: vp
+  #timesteps: 1000
+  T: 1.0 #1000.0 # 1.0
+  eps: 1.e-3 # time epsilon for the reverse timegrid
+  beta_min: 0.01 #0.1 #1.e-4 #0.01 #1.e-3 #1.e-4 # 0.01
+  beta_max: 10.0 #20.0 #0.02 #10.0 #1.e-2 #0.02 # 10.0
+
+  # diffusion_type: ve
+  # timesteps: 1000
+  # sigma_min: 0.01
+  # sigma_max: 50
+  # T: 1.0 #1000.0
+  # eps: 1.e-3 # time epsilon for the reverse timegrid
+
+data:
+  data_name: mnist
+
+model:
+  name: unet-diffusers #gfdm-unet #unet-diffusers # unet
+  input_size: 32
+  num_classes: 10
+  c_in: 1
+  c_out: 1
+  time_dim: 256
+  cross_attention_dim: 128
+  remove_deep_conv: false
+  input_folder: './model_outputs/mnist/mnist-cluster-187382/'
+  which: all  
+
+validation:
+  batch_size: 128 #128 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
+  n_steps: 1000
+  guidance_scale: 5.0 #0.8
+  label_to_generate: 4
+  output_folder: './outputs/generated_samples/mnist/'  

@@ -1,9 +1,8 @@
 wandb:
-  project_name: conditional-diffusion-mnist
+  project_name: conditional-diffusion-brain
 
 diffusion:
   diffusion_type: vp
-  #timesteps: 1000
   T: 1.0 #1000.0 # 1.0
   eps: 1.e-3 # time epsilon for the reverse timegrid
   beta_min: 0.01 #0.1 #1.e-4 #0.01 #1.e-3 #1.e-4 # 0.01
@@ -18,9 +17,14 @@ diffusion:
   # T: 1.0 #1000.0
   # eps: 1.e-3 # time epsilon for the reverse timegrid
 
+# do i want to have a joint dataloader that will take care of both ANN and fmri data? 
 data:
-  data_name: mnist
-  data_root: './data'
+  data_name: ann-brain
+  num_sessions: 40 # may need to separate it for train/test somehow 
+  behav_data_root: './data/'
+  fmri_data_root: '/data/datapool3/datasets/nsd_betas_condavg/' # TODO: add this as BIND to bash script
+  ann_model: "" 
+  layer: 
 
 # need to wire up the model arguments' with UNet class definition
 model:
