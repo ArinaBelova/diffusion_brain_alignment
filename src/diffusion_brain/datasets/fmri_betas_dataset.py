@@ -4,13 +4,18 @@ import nibabel as nb
 import torch
 from torch.utils.data import Dataset
 
-def preprocess_nsd_roi(args):
+def get_roi_indices(args):
     # 1. Load the ROI mask (using your existing logic)
     print("Loading ROI masks...")
     maskdata, _ = get_rois(args.data.roi_defs_dir, args.data.roi_file, args.data.roi)
     
     roi_indices = np.where(maskdata == args.data.roi)[0]
     print(f"Extracted {len(roi_indices)} voxels for ROI: {args.data.roi}")
+    return roi_indices
+
+def preprocess_nsd_roi(args):
+    # 1. Get ROI indices 
+    roi_indices = get_roi_indices(args)
 
     # 2. Load the large beta file
     data_name = f"{args.data.subj}_" + f"{args.data.fmri_data_name}"
@@ -74,7 +79,8 @@ class FmriDataset(Dataset):
             processed_file_path = preprocess_nsd_roi(args)
         
         self.data = np.load(processed_file_path, mmap_mode='r').T # I want dataset here to be [n_img, n_voxels], so we can sample by image 
-
+        self.roi_indices = get_roi_indices(args)
+    
     def __len__(self):
         return self.data.shape[0]
 

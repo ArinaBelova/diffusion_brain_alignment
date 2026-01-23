@@ -57,9 +57,8 @@ def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_func
     data, label = next(train_dataloader)
     data = data.float().to(DEVICE)
     label = label.to(DEVICE)
-    
-    print(data, label)
-    return 
+
+    visualise_and_save_results(data, step, args)
 
     b, *_ = data.shape
     # sample a random timepoints for the backward process

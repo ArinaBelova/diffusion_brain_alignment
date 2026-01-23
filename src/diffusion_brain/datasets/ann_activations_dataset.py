@@ -30,7 +30,6 @@ class H5Dataset(Dataset):
         with h5py.File(self.file_path, 'r') as f:
             data = f[self.data_name][idx]
             
-            print("data type in ann activations dataset: ", data.dtype, flush=True)
             if self.transform:
                 data = self.transform(data)
 

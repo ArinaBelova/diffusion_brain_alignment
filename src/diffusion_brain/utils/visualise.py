@@ -23,7 +23,10 @@ def visualise_and_save_results(generated_samples, step, args):
         wandb.log({"validation_sample": wandb.Image(fig)}) #, step=epoch)
         plt.close(fig)
     elif args.data.data_name == "ann-brain":
-        pyplot_brain(generated_samples, savename=f"generated_samples_step_{step}", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png')
+        generated_samples = generated_samples[0] # take the first element of the batch for visualisation
+        print("Generated samples shape: ", generated_samples.shape)
+        print("Generated samples type: ", type(generated_samples))
+        pyplot_brain(generated_samples, args, savename=f"generated_samples_step_{step}", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png')
     else:    
         generated_samples = torch.clip(generated_samples, 0.0, 1.0)
         grid_to_display = torchvision.utils.make_grid(generated_samples, nrow=int(np.sqrt(args.validation.batch_size)))
@@ -35,10 +38,16 @@ def visualise_and_save_results(generated_samples, step, args):
         torchvision.utils.save_image(generated_samples, f"{directory_to_save}/generated_samples_step_{step}.png", nrow=int(np.sqrt(args.validation.batch_size)))
 
 # Function is courtesy of https://github.com/adriendoerig/visuo_llm/blob/main/src/nsd_visuo_semantics/utils/py_plot_brain_utils.py
-def pyplot_brain(fsavg_data, savename, figpath, save_type='png', max_cmap_val=None):
-
+def pyplot_brain(fsavg_data, savename, figpath, args, save_type='png', max_cmap_val=None):
+    # as we work with ROI as our data, we need to reconstruct full brain data
+    fmri_dataset = fmri_dataset(args)
+    roi_indices = fmri_dataset.roi_indices 
+    full_brain_data = np.full((327684,), 0)
+    
     # where does pycortex searches for a database:
-    print(cortex.database.default_filestore)
+    # cortex.database.default_filestore = "/data/datapool3/datasets/nsd_betas_condavg/"
+    # cortex.db.filestore = "/data/datapool3/datasets/nsd_betas_condavg/"
+    # print(cortex.database.default_filestore)
     
     os.makedirs(figpath, exist_ok=True)
 
