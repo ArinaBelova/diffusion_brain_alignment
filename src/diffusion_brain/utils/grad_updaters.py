@@ -3,14 +3,6 @@ import torch.optim as optim
 import math
 
 def set_loss_function(args):
-    if args.data.data_name == "mnist" or args.data.data_name == "toy":
-        loss_function = get_mnist_loss(args)
-    else:
-        raise ValueError(f"Loss function for dataset {args.data.data_name} is not yet implemented.")
-    return loss_function    
-
-
-def get_mnist_loss(args):
     if args.optim.loss == "mse":
         loss_function = torch.nn.MSELoss()
     else:

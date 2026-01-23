@@ -3,7 +3,8 @@
 import os 
 import numpy as np
 import pandas as pd
-
+import glob 
+import re
 
 def read_behavior(behav_data_root, subject, session_index, trial_index=[]):
     """read_behavior [summary]

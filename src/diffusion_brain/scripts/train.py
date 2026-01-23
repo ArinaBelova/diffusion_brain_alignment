@@ -58,6 +58,9 @@ def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_func
     data = data.float().to(DEVICE)
     label = label.to(DEVICE)
     
+    print(data, label)
+    return 
+
     b, *_ = data.shape
     # sample a random timepoints for the backward process
     t = (torch.rand(b, device=data.device) * (args.diffusion.T - args.diffusion.eps) + args.diffusion.eps)
