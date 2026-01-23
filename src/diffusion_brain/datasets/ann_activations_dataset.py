@@ -50,12 +50,12 @@ class AnnActivationsDataset(H5Dataset):
 
     def __getitem__(self, idx):
         # for now we assume that we don't need labels from our coco dataset
-        print(f"INDEX IN ANN DATASET {idx}", flush=True)
         image = super().__getitem__(idx)
         
         # pass the image through the pretrained ANN to get activations
-        activation = self._get_ann_activations(image)
-
+        # add batch dimension
+        activation = self._get_ann_activations(image.unsqueeze(0)) # TODO: here we supply only 1 image, so we need to unsqueeze for batch dimension, but after we get activation we have batch_size, why?
+        activation = activation['feat'].squeeze() # torch.Size([32, 2048])
         return activation
     
     # TODO maybe outsource choice of layer neame to the training script logic? 

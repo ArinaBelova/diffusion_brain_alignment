@@ -20,4 +20,4 @@ IPython
 wandb
 pytorch-fid
 diffusers
-dvc
+pycortex

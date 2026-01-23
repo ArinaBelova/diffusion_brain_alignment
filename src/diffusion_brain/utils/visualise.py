@@ -4,12 +4,12 @@ import torch
 import wandb
 from matplotlib import pyplot as plt
 import numpy as np
+import cortex
 
 def visualise_and_save_results(generated_samples, step, args):
+    generated_samples = generated_samples.cpu().numpy()
     if args.data.data_name == "toy":
         # for toy data we need to plot scatter plots
-        generated_samples = generated_samples.cpu().numpy()
-
         mean = np.mean(generated_samples, axis=0)
         print("Generated samples shape: ", generated_samples.shape)
         print("Generated samples mean:", mean)
@@ -22,6 +22,8 @@ def visualise_and_save_results(generated_samples, step, args):
         ax.set_ylim(-args.data.radius - 2, args.data.radius + 2)
         wandb.log({"validation_sample": wandb.Image(fig)}) #, step=epoch)
         plt.close(fig)
+    elif args.data.data_name == "ann-brain":
+        pyplot_brain(generated_samples, savename=f"generated_samples_step_{step}", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png')
     else:    
         generated_samples = torch.clip(generated_samples, 0.0, 1.0)
         grid_to_display = torchvision.utils.make_grid(generated_samples, nrow=int(np.sqrt(args.validation.batch_size)))
@@ -31,3 +33,27 @@ def visualise_and_save_results(generated_samples, step, args):
         if not os.path.exists(directory_to_save):
             os.makedirs(directory_to_save)
         torchvision.utils.save_image(generated_samples, f"{directory_to_save}/generated_samples_step_{step}.png", nrow=int(np.sqrt(args.validation.batch_size)))
+
+# Function is courtesy of https://github.com/adriendoerig/visuo_llm/blob/main/src/nsd_visuo_semantics/utils/py_plot_brain_utils.py
+def pyplot_brain(fsavg_data, savename, figpath, save_type='png', max_cmap_val=None):
+
+    # where does pycortex searches for a database:
+    print(cortex.database.default_filestore)
+    
+    os.makedirs(figpath, exist_ok=True)
+
+    if max_cmap_val is None:
+        boundar = np.nanmax(np.abs(fsavg_data))
+    else:
+        boundar = np.nanmax(np.abs(max_cmap_val))
+
+    vert = cortex.dataset.Vertex(fsavg_data, "fsaverage", cmap='RdBu_r', vmin=-boundar, vmax=boundar)    
+    flatmap = cortex.quickflat.make_figure(vert, height=480, with_colorbar=1, with_rois=False)
+    
+    fig = plt.gcf()
+
+    wandb.log({f"{savename}": wandb.Image(fig)})
+
+    fig.suptitle(f'{savename} - max abs val: {np.nanmax(np.abs(fsavg_data)):.2f}')
+    plt.savefig(f'{figpath}/{savename}.{save_type}', dpi=300)
+    plt.close()        
