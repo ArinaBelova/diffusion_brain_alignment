@@ -13,3 +13,4 @@ outputs/*
 data/*
 data_coco/*
 model_outputs/*
+test.ipynb

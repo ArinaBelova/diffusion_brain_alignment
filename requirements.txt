@@ -21,3 +21,4 @@ wandb
 pytorch-fid
 diffusers
 pycortex
+scikit-learn

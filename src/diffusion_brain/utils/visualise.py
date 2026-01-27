@@ -26,7 +26,7 @@ def visualise_and_save_results(generated_samples, step, args):
         generated_samples = generated_samples[0] # take the first element of the batch for visualisation
         print("Generated samples shape: ", generated_samples.shape)
         print("Generated samples type: ", type(generated_samples))
-        pyplot_brain(generated_samples, args, savename=f"generated_samples_step_{step}", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png')
+        pyplot_brain(generated_samples, args=args, savename=f"generated_samples_step_{step}", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png')
     else:    
         generated_samples = torch.clip(generated_samples, 0.0, 1.0)
         grid_to_display = torchvision.utils.make_grid(generated_samples, nrow=int(np.sqrt(args.validation.batch_size)))
@@ -40,15 +40,13 @@ def visualise_and_save_results(generated_samples, step, args):
 # Function is courtesy of https://github.com/adriendoerig/visuo_llm/blob/main/src/nsd_visuo_semantics/utils/py_plot_brain_utils.py
 def pyplot_brain(fsavg_data, savename, figpath, args, save_type='png', max_cmap_val=None):
     # as we work with ROI as our data, we need to reconstruct full brain data
-    fmri_dataset = fmri_dataset(args)
-    roi_indices = fmri_dataset.roi_indices 
-    full_brain_data = np.full((327684,), 0)
-    
-    # where does pycortex searches for a database:
-    # cortex.database.default_filestore = "/data/datapool3/datasets/nsd_betas_condavg/"
-    # cortex.db.filestore = "/data/datapool3/datasets/nsd_betas_condavg/"
-    # print(cortex.database.default_filestore)
-    
+    roi_indices_path = os.path.join(args.data.roi_defs_dir, "roi_indices", str(args.data.roi) + ".npy")
+    roi_indices = np.load(roi_indices_path, allow_pickle=True) 
+    full_brain_data = np.zeros(327684)
+    full_brain_data[roi_indices] = fsavg_data
+
+    cortex.download_subject('fsaverage')
+
     os.makedirs(figpath, exist_ok=True)
 
     if max_cmap_val is None:
@@ -56,7 +54,7 @@ def pyplot_brain(fsavg_data, savename, figpath, args, save_type='png', max_cmap_
     else:
         boundar = np.nanmax(np.abs(max_cmap_val))
 
-    vert = cortex.dataset.Vertex(fsavg_data, "fsaverage", cmap='RdBu_r', vmin=-boundar, vmax=boundar)    
+    vert = cortex.dataset.Vertex(full_brain_data, "fsaverage", cmap='RdBu_r', vmin=-boundar, vmax=boundar)    
     flatmap = cortex.quickflat.make_figure(vert, height=480, with_colorbar=1, with_rois=False)
     
     fig = plt.gcf()

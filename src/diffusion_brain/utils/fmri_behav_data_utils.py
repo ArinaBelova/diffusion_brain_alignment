@@ -6,6 +6,8 @@ import pandas as pd
 import glob 
 import re
 
+from torch.utils.data import Subset
+
 def read_behavior(behav_data_root, subject, session_index, trial_index=[]):
     """read_behavior [summary]
 
@@ -108,3 +110,27 @@ def get_subject_conditions(behav_data_root, subj, n_sessions, keep_only_3repeats
     sample = np.unique(conditions[conditions_bool])
 
     return conditions, conditions_sampled, sample
+
+
+def get_train_test_indices(args):
+    overall_cond_ann = np.load(os.path.join(args.data.behav_data_root, args.data.subj + "_all_conditions.npy"), allow_pickle=True)
+    
+    test_cond_ann = np.load(os.path.join(args.data.behav_data_root, "common_515_indices.npy"), allow_pickle=True)
+    train_cond_ann = np.array([i for i in overall_cond_ann if i not in test_cond_ann])
+
+    train_pos_indices = np.where(np.isin(overall_cond_ann, train_cond_ann))[0]
+    test_pos_indices = np.where(np.isin(overall_cond_ann, test_cond_ann))[0]
+    
+    return train_cond_ann, test_cond_ann, train_pos_indices, test_pos_indices
+
+
+def get_train_test_subsets(fmri_dataset, activations_dataset, args):
+    train_cond_ann, test_cond_ann, train_pos_indices, test_pos_indices = get_train_test_indices(args)
+
+    train_fmri_dataset = Subset(fmri_dataset, train_pos_indices)
+    test_fmri_dataset = Subset(fmri_dataset, test_pos_indices)
+    
+    train_activations_dataset = Subset(activations_dataset, train_cond_ann)
+    test_activations_dataset = Subset(activations_dataset, test_cond_ann)
+
+    return train_fmri_dataset, test_fmri_dataset, train_activations_dataset, test_activations_dataset
