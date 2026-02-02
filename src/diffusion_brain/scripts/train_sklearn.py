@@ -2,12 +2,14 @@ from sklearn.linear_model import RidgeCV
 import torch 
 from scipy.stats import pearsonr
 import numpy as np
+import rsatoolbox
+import wandb
 #from fracridge import FracRidgeRegressorCV
 
 from diffusion_brain.data_utils import get_dataloader
 from diffusion_brain.utils.setup import parse_args_and_setup_wandb
 from diffusion_brain.utils.visualise import visualise_and_save_results
-from diffusion_brain.utils.fmri_behav_data_utils import get_train_test_subsets
+from diffusion_brain.utils.fmri_behav_data_utils import get_train_test_subsets, compute_rdm
 from diffusion_brain.datasets.fmri_betas_dataset import FmriDataset
 from diffusion_brain.datasets.ann_activations_dataset import AnnActivationsDataset
 from diffusion_brain.utils.visualise import pyplot_brain
@@ -20,7 +22,7 @@ def get_train_test_numpy_datasets(train_dataloader, test_dataloader, args):
 
     return train_fmri_dataset.numpy(), test_fmri_dataset.numpy(),train_activations_dataset.numpy(), test_activations_dataset.numpy()
 
-def train(train_activations_dataset, train_fmri_dataset):
+def train(train_activations_dataset, train_fmri_dataset, args):
     print("Training Ridge Regression with Cross-Validation...", flush=True)
 
     print("Stats of train activations dataset:", train_activations_dataset.mean(), train_activations_dataset.std(), flush=True)
@@ -30,11 +32,11 @@ def train(train_activations_dataset, train_fmri_dataset):
     alphas = np.array([1e-3, 1e-2, 1e-1, 1])
 
     #################### DEBUG WITH PURE NOISE DATA ###################
-    # train_activations_dataset = np.random.randn(*train_activations_dataset.shape)
+    #train_activations_dataset = np.random.randn(*train_activations_dataset.shape)
     # train_fmri_dataset = np.random.randn(*train_fmri_dataset.shape)
 
     # permute rows (images) in activations matrix
-    np.random.shuffle(train_activations_dataset)
+    # np.random.shuffle(train_activations_dataset)
     ##############################################
 
     clf = RidgeCV(alphas=alphas, scoring="r2").fit(train_activations_dataset, train_fmri_dataset)
@@ -49,7 +51,6 @@ def train(train_activations_dataset, train_fmri_dataset):
     print("Evaluating on training data...", flush=True)
     
     final_score = clf.score(train_activations_dataset, train_fmri_dataset)
-    
     print("Evaluation completed.", flush=True)
     print(f"Best Alpha: {clf.alpha_}", flush=True)
     print(f"Score: {final_score}", flush=True)
@@ -87,6 +88,12 @@ def validate_and_visualise(clf, true_activations_dataset, true_fmri_dataset, arg
     r2_scores = np.array(r2_scores)
     pyplot_brain(r2_scores, args=args, savename=f"roi_{args.data.roi}_r2_scores_step_{step}", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png')
  
+    print("Visualising RDM on test dataset: ", flush=True)
+    rdms_true_test_fmri = compute_rdm(true_fmri_dataset, args, regime="test")
+    rdms_predicted_test_fmri = compute_rdm(fmri_predicted, args, regime="test")
+
+    wandb.log({"rdm_true_test_fmri": wandb.Image(rsatoolbox.vis.show_rdm(rdms_true_test_fmri)[0], caption="RDM True Test fMRI")})
+    wandb.log({"rdm_predicted_test_fmri": wandb.Image(rsatoolbox.vis.show_rdm(rdms_predicted_test_fmri)[0], caption="RDM Predicted Test fMRI")})
 
 def main():
     args = parse_args_and_setup_wandb()
@@ -109,7 +116,7 @@ def main():
     # print("Shape of train fmri dataset:", train_fmri_dataset.shape, flush=True)
     # print("Shape of train activations dataset:", train_activations_dataset.shape, flush=True)
 
-    clf = train(train_activations_dataset, train_fmri_dataset)    
+    clf = train(train_activations_dataset, train_fmri_dataset, args)    
 
     #print("Shape of test fmri dataset:", test_fmri_dataset.shape, flush=True)
     #print("Shape of test activations dataset:", test_activations_dataset.shape, flush=True)

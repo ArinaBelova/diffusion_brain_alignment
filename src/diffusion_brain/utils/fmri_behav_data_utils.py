@@ -8,6 +8,7 @@ import re
 import torch
 import nibabel as nb
 from filelock import FileLock
+import rsatoolbox
 
 from torch.utils.data import Subset
 
@@ -215,3 +216,18 @@ def ensure_fmri_roi_exists(args):
             print(f"fMRI ROI data found at {save_path}")
     
     return save_path
+
+################ RDM manipulations ########################
+def compute_rdm(data, args, regime="train", method='correlation'):
+    train_nsd_ids, test_nsd_ids, _, _ = get_train_test_indices(args)
+
+    nsd_ids = train_nsd_ids if regime == 'train' else test_nsd_ids
+    obs_descriptors = {'conds': [f'stim_{i}' for i in nsd_ids]}
+
+    # 3. Create the rsatoolbox Dataset object
+    dataset = rsatoolbox.data.Dataset(
+        measurements=data,
+        obs_descriptors=obs_descriptors
+    )
+    rdm = rsatoolbox.rdm.calc_rdm(dataset, method=method)
+    return rdm
