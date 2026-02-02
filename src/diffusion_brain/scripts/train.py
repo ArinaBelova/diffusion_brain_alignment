@@ -94,7 +94,7 @@ def train(args):
     lr_scheduler = set_learning_rate_scheduler(optimizer, args)
 
     # get the dataloaders, it seems that we don't need to have a validation dataloader as we;re in the pure diffusion setting and not in bridges
-    train_dataloader, _ = get_dataloader(args)
+    train_dataloader, valid_dataloader = get_dataloader(args)
     train_dataloader = itertools.cycle(train_dataloader)
 
     print(f"We're getting diffusion type {args.diffusion.diffusion_type}", flush=True)
@@ -113,7 +113,7 @@ def train(args):
             print(f"Validation at step {step+1}", flush=True)
             generated_samples = diffusivity.generate_samples(args.validation.batch_size, model, diffusion_process, args, device=DEVICE)
             # TODO: add other image statistics later 
-            visualise_and_save_results(generated_samples, step, args)
+            visualise_and_save_results(generated_samples, valid_dataloader, step, args)
 
         # save the models throughout the training
         if step % args.model.save_freq == 0 and step > 0:

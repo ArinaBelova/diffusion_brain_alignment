@@ -10,7 +10,7 @@ def get_roi_indices(args):
     
     roi_indices = np.where(maskdata == args.data.roi)[0]
     print(f"Extracted {len(roi_indices)} voxels for ROI: {args.data.roi}")
-    file_roi_idx = os.path.join(args.data.roi_defs_dir, f"roi_indices", f"{args.data.roi}.npy")
+    file_roi_idx = os.path.join(args.data.roi_defs_dir, f"roi_indices", args.data.roi_file, f"{args.data.roi}.npy")
     if not os.path.exists(os.path.dirname(file_roi_idx)):
         os.makedirs(os.path.dirname(file_roi_idx))
     np.save(file_roi_idx, roi_indices)
