@@ -27,9 +27,11 @@ data:
   fmri_data_root: '/data/datapool3/datasets/nsd_betas_condavg/' # TODO: add this as BIND to bash script
   fmri_data_name: 'betas_average_fsaverage.npy'
   ann_model: "resnet50" 
+  ann_model_weights: "ResNet50_Weights.IMAGENET1K_V2"
+  ann_activations_data_path: './src/diffusion_brain/data/ann_activations/'
   layer_name: "avgpool"
   ann_input_size: 256
-  roi: 7 # do the correct indexing as described in roi_defs/streams.mgz.ctab
+  roi: 1 # do the correct indexing as described in roi_defs/streams.mgz.ctab
   roi_defs_dir: './src/diffusion_brain/data/roi_defs/'
   roi_file: "streams" # can be HCP_MMP1 or nsdgeneral
 
@@ -45,7 +47,7 @@ model:
   dropout_prob: 0.2 # label dropout in classifier-free training
   remove_deep_conv: false
   save_freq: 500
-  output_folder: './model_outputs/mnist/'
+  output_folder: './model_outputs/ann-brain/'
 
 optim:
   loss: mse
@@ -66,7 +68,7 @@ train:
   image_size: 32
   batch_size: 32
   dataset_size: 9485 # 10000 - 515 images as train
-  num_workers: 1 #4
+  num_workers: 4
 
 # may need to combine this with either diffusion or validation or both
 # for training don't need sampling parameters, may need to move it to the completely different evaluation config
@@ -81,5 +83,5 @@ validation:
   n_steps: 1000
   guidance_scale: 0.0 #0.8
   label_to_generate: 5
-  output_folder: './outputs/mnist/'
+  output_folder: './outputs/ann-brain/'
   num_workers: 1
