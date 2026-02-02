@@ -1,0 +1,29 @@
+# TORCH=2.4.0
+# CUDA=cu124
+
+torch==2.4.0
+torchvision==0.19.0
+torchsummaryX
+einop
+lmdb
+lpips
+numpy
+matplotlib
+Pillow
+PyYAML
+scipy
+timm
+tqdm
+gradio
+ema_pytorch
+IPython
+wandb
+pytorch-fid
+diffusers
+nibabel
+h5py
+pycortex
+scikit-learn
+plotly
+fracridge
+# dvc

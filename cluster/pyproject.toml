@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diffusion-brain"
+version = "0.1.0"
+description = "Diffusivity model training utilities"
+authors = [
+    {name = "Arina Belova", email = "arina.belova@hhi.fraunhofer.de"}
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

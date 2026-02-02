@@ -1,0 +1,31 @@
+Bootstrap: docker
+From: continuumio/miniconda3
+
+%files
+    requirements.txt /opt/app/requirements.txt
+    ../src /opt/app/src
+    pyproject.toml /opt/app/pyproject.toml
+
+%post
+    ENV_NAME="diffusion_brain"
+    
+    apt-get update
+    apt-get install -y build-essential
+
+    echo ". /opt/conda/etc/profile.d/conda.sh" >> $APPTAINER_ENVIRONMENT
+    echo "conda activate $ENV_NAME" >> $APPTAINER_ENVIRONMENT
+
+    . /opt/conda/etc/profile.d/conda.sh
+    conda create --name diffusion_brain python=3.9
+    conda activate diffusion_brain
+
+    cd /opt/app
+    
+    pip install -r requirements.txt
+    pip install .
+
+    conda install -c anaconda ca-certificates -y
+    conda clean --all -y
+
+%runscript
+    exec "$@"
