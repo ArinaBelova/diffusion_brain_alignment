@@ -5,6 +5,7 @@ import wandb
 from matplotlib import pyplot as plt
 import numpy as np
 import cortex
+import plotly
 
 def visualise_and_save_results(generated_samples, step, args):
     generated_samples = generated_samples.cpu().numpy()
@@ -59,8 +60,9 @@ def pyplot_brain(fsavg_data, savename, figpath, args, save_type='png', max_cmap_
     
     fig = plt.gcf()
 
+    #wandb.log({f"{savename}": wandb.Html(plotly.io.to_html(fig))})
     wandb.log({f"{savename}": wandb.Image(fig)})
 
     fig.suptitle(f'{savename} - max abs val: {np.nanmax(np.abs(fsavg_data)):.2f}')
-    plt.savefig(f'{figpath}/{savename}.{save_type}', dpi=300)
+    plt.savefig(f'{figpath}/{savename}.{save_type}', dpi=600)
     plt.close()        

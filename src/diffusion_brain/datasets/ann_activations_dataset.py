@@ -1,69 +1,123 @@
 import torch
 import h5py
 from torch.utils.data import Dataset
-from torchvision import transforms
 from torchvision.models.feature_extraction import create_feature_extractor
 import os
+import numpy as np
+from PIL import Image
+from filelock import FileLock
+from pathlib import Path
 
-class H5Dataset(Dataset):
-    # for the sake of our experimentation the data_name parameter is fixed to "imgBrick"
-    def __init__(self, args, data_name="imgBrick"):
-        self.file_path = os.path.join(args.data.images_data_path, "nsd_stimuli.hdf5")
-        self.data_name = data_name
-        #self.label_name = label_name
-        self.transform = transforms.Compose([
-                                            transforms.ToPILImage(),
-                                            transforms.Resize((args.data.ann_input_size, args.data.ann_input_size), interpolation=transforms.InterpolationMode.BILINEAR),
-                                            transforms.ToTensor()
-                                        ]) # usually resizing to fit the image size expected by the ANN
-        
-        # Open the file once to get the length
-        with h5py.File(self.file_path, 'r') as f:
-            self.dataset_len = len(f[self.data_name])
-
-    def __len__(self):
-        return self.dataset_len
-
-    def __getitem__(self, idx):
-        # We open the file in 'r' mode inside __getitem__ 
-        # to ensure it works with multi-process DataLoader
-        with h5py.File(self.file_path, 'r') as f:
-            data = f[self.data_name][idx]
-            
-            if self.transform:
-                data = self.transform(data)
-
-            # if self.label_name:
-            #     label = torch.from_numpy(f[self.label_name][idx]).long()
-            #    return data, label
-            
-            return data
-        
-class AnnActivationsDataset(H5Dataset):
-    def __init__(self, args):
-        super().__init__(args)
-        self.layer_name = args.data.layer_name
-        self.model = torch.hub.load('pytorch/vision', args.data.ann_model, pretrained=True, trust_repo=True) # model_name="resnet50"
-        self.activations_extractor = create_feature_extractor(self.model, return_nodes={self.layer_name: 'feat'}) # layer_name: what we want to call it
-        print(f"Initialized AnnActivationsDataset with layer: {self.layer_name}")
-
-    def __getitem__(self, idx):
-        # for now we assume that we don't need labels from our coco dataset
-        image = super().__getitem__(idx)
-        
-        # pass the image through the pretrained ANN to get activations
-        # add batch dimension
-        activation = self._get_ann_activations(image.unsqueeze(0)) # TODO: here we supply only 1 image, so we need to unsqueeze for batch dimension, but after we get activation we have batch_size, why?
-        activation = activation['feat'].squeeze() # torch.Size([32, 2048])
-        return activation
+def precompute_activations(indices_to_extract, args, data_name="imgBrick"):
+    """
+    Extract activations - MUST be called from main process before DataLoader.
+    Returns tensor of shape [n_samples, *feature_dims]
+    """
+    device = torch.device("cpu")
     
-    # TODO maybe outsource choice of layer neame to the training script logic? 
-    def _get_ann_activations(self, image):
-        # Placeholder for actual ANN activation extraction logic
-        # This should interface with the ANN model to get activations for the given layer
-        self.model.eval()
+    # Load model
+    weights_name = args.data.ann_model_weights
+    print(f"In precompute activations the requested weights are {weights_name}")
+    weights = torch.hub.load('pytorch/vision', 'get_weight', name=weights_name)
+    transforms = weights.transforms()
+    print(f"Transforms of the model {args.data.ann_model} are {transforms}")
+    model = torch.hub.load('pytorch/vision', args.data.ann_model, weights=weights)
+    
+    extractor = create_feature_extractor(
+        model,
+        return_nodes={args.data.layer_name: 'feat'}
+    ).to(device).eval()
+    
+    # Open H5 file
+    file_path = os.path.join(args.data.images_data_path, "nsd_stimuli.hdf5")
+    indices = np.array(indices_to_extract) # - 1  
+    
+    activations = []  # List instead of dict
+    
+    with h5py.File(file_path, 'r') as f:
+        dataset = f[data_name]
+        
         with torch.no_grad():
-            activation = self.activations_extractor(image)
+            for nsd_idx in indices:
+                img = Image.fromarray(dataset[nsd_idx - 1]) # 1-indexed to 0-indexed
+                img_tensor = transforms(img).unsqueeze(0).to(device)
+                feat = extractor(img_tensor)['feat'].squeeze().cpu()
+                activations.append(feat)
+    
+    # Stack into tensor [n_samples, *feature_dims]
+    activations = torch.stack(activations, dim=0)
+    
+    # Save
+    save_path = os.path.join(
+        args.data.ann_activations_data_path, 
+        args.data.ann_model,
+        f"activations_weights_{weights_name}_layer_{args.data.layer_name}_{len(indices)}_samples.pt"
+    )
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    torch.save(activations, save_path)
+    print(f"Saved activations to {save_path}, shape: {activations.shape}")
+    
+    return activations, save_path
 
-        return activation
 
+def ensure_activations_exist(activations_path, indices_to_extract, args):
+    """Thread-safe check and extraction."""
+    lock_path = activations_path + ".lock"
+    
+    with FileLock(lock_path):
+        if not os.path.isfile(activations_path):
+            print(f"Activations not found at {activations_path}. Extracting...")
+            precompute_activations(indices_to_extract, args)
+        else:
+            print(f"Activations found at {activations_path}")
+
+
+class AnnActivationsDataset(Dataset):
+    """Multi-worker safe dataset for pre-computed activations."""
+    
+    def __init__(self, activations_path):
+        if not os.path.isfile(activations_path):
+            raise FileNotFoundError(
+                f"Activations not found at {activations_path}. "
+                f"Call ensure_activations_exist() before creating DataLoader."
+            )
+        
+        # Load as tensor [n_samples, *feature_dims]
+        self.activations = torch.load(activations_path, map_location="cpu")
+        
+    def __len__(self):
+        return len(self.activations)
+    
+    def __getitem__(self, idx):
+        return self.activations[idx]
+
+
+class PairedBrainAnnDataset(Dataset):
+    """
+    Pairs fMRI (condition) with ANN activations (target).
+    Uses pre-computed ROI fMRI and aligned indices.
+    """
+    
+    def __init__(self, activations_path, fmri_roi_path, sample_indices):
+        """
+        Args:
+            activations_path: path to activations [n_split, *feat_dims]
+            fmri_roi_path: path to ROI betas [n_total_samples, n_roi_voxels]
+            sample_indices: indices into fmri for this split
+        """
+        self.activations = torch.load(Path(activations_path), map_location="cpu")
+        
+        # Load ROI betas and index
+        fmri_all = torch.load(Path(fmri_roi_path), map_location="cpu")  # [n_total, n_voxels]
+        self.fmri_data = fmri_all[sample_indices]  # [n_split, n_voxels]
+        
+        assert len(self.fmri_data) == len(self.activations), \
+            f"Mismatch: fMRI={len(self.fmri_data)}, activations={len(self.activations)}"
+        
+        print(f"Dataset: {len(self)} samples, fMRI: {self.fmri_data.shape}, ANN: {self.activations.shape}")
+    
+    def __len__(self):
+        return len(self.activations)
+    
+    def __getitem__(self, idx):
+        return self.fmri_data[idx], self.activations[idx]

@@ -22,8 +22,13 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
     mu, std = diffusion_process.brown_moments(x, t)
     x_t = mu + std * noise
 
-    mask = torch.bernoulli(torch.full((len(label),), args.model.dropout_prob)).to(label.device)        
-    masked_labels = label * (1 - mask) + (args.model.num_classes * mask) # don't use -1 as the empty label as nn.Embedding will throw error
+    mask = torch.bernoulli(torch.full((len(label),), args.model.dropout_prob)).to(label.device) 
+
+    if args.data.data_name == "ann-brain":
+        # for ann-brain data we have a continuous label vector representation instead of discrete num_classes
+        masked_labels = label * (1 - mask[:, None])
+    else:    
+        masked_labels = label * (1 - mask) + (args.model.num_classes * mask) # don't use -1 as the empty label as nn.Embedding will throw error
     masked_labels = masked_labels.long()    
 
     if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
@@ -38,10 +43,6 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
         #######################
 
         encoder_hidden_states = torch.zeros(x_t.shape[0], 1, args.model.cross_attention_dim, device=x_t.device)
-
-        # print("masked labels before passing them to forward: ", masked_labels)
-        # print("sanple: ", x_t)
-        # print("time: ", t)
 
         predicted_score = score_fn(x_t, t, encoder_hidden_states = encoder_hidden_states, class_labels=masked_labels).sample    # encoder_hidden_states=None,
     else:
@@ -58,8 +59,7 @@ def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_func
     data = data.float().to(DEVICE)
     label = label.to(DEVICE)
 
-    visualise_and_save_results(data, step, args)
-
+    print(f"DATA SHAPE {data.shape}, LABEL SHAPE {label.shape}")
     b, *_ = data.shape
     # sample a random timepoints for the backward process
     t = (torch.rand(b, device=data.device) * (args.diffusion.T - args.diffusion.eps) + args.diffusion.eps)

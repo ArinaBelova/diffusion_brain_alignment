@@ -5,12 +5,15 @@ import torch
 from torch.utils.data import Dataset
 
 def get_roi_indices(args):
-    # 1. Load the ROI mask (using your existing logic)
     print("Loading ROI masks...")
     maskdata, _ = get_rois(args.data.roi_defs_dir, args.data.roi_file, args.data.roi)
     
     roi_indices = np.where(maskdata == args.data.roi)[0]
     print(f"Extracted {len(roi_indices)} voxels for ROI: {args.data.roi}")
+    file_roi_idx = os.path.join(args.data.roi_defs_dir, f"roi_indices", f"{args.data.roi}.npy")
+    if not os.path.exists(os.path.dirname(file_roi_idx)):
+        os.makedirs(os.path.dirname(file_roi_idx))
+    np.save(file_roi_idx, roi_indices)
     return roi_indices
 
 def preprocess_nsd_roi(args):
@@ -31,7 +34,7 @@ def preprocess_nsd_roi(args):
     processed_data = full_data[roi_indices, :]
     
     # 4. Save as a new file
-    output_path = os.path.join(args.data.roi_defs_dir, f"roi_preselected", f"{args.data.roi_file}", data_name, f"{args.data.subj}_{args.data.roi}.npy")
+    output_path = os.path.join(args.data.roi_defs_dir, f"roi_preselected", f"{args.data.roi_file}", f"{args.data.subj}_{args.data.roi}.npy")
     if not os.path.exists(os.path.dirname(output_path)):
         os.makedirs(os.path.dirname(output_path))
     np.save(output_path, processed_data)
@@ -40,34 +43,33 @@ def preprocess_nsd_roi(args):
     return output_path
 
 def get_rois(roi_defs_dir, roi_file, roi):
-        roi_names_file = os.path.join(roi_defs_dir, f"{roi_file}.mgz.ctab")
-        try:
-            with open(roi_names_file) as f:
-                # get ROI names automatically. If you don't have the .ctab file
-                # you can also enter them by hand. 0 is always "Unknown")
-                roi_id2name = {int(x[0]): x[2:-1] for x in f}
-        except ValueError:
-            print(
-                f"roi_names_file not found. Requested {roi_names_file}. Using {roi} as single ROI name."
-            )
-            roi_id2name = {0: "Unknown"}
-            roi_id2name[1] = roi
+    roi_names_file = os.path.join(roi_defs_dir, f"{roi_file}.mgz.ctab")
+    try:
+        with open(roi_names_file) as f:
+            # get ROI names automatically. If you don't have the .ctab file
+            # you can also enter them by hand. 0 is always "Unknown")
+            roi_id2name = {int(x[0]): x[2:-1] for x in f}
+    except ValueError:
+        print(
+            f"roi_names_file not found. Requested {roi_names_file}. Using {roi} as single ROI name."
+        )
+        roi_id2name = {0: "Unknown", 1: roi}
 
-        # load the roi masks
-        try:
-            lh_file = os.path.join(roi_defs_dir, f"lh.{roi_file}.mgz")
-            rh_file = os.path.join(roi_defs_dir, f"rh.{roi_file}.mgz")
-            maskdata_lh = nb.load(lh_file).get_fdata().squeeze()
-            maskdata_rh = nb.load(rh_file).get_fdata().squeeze()
-        except ValueError:
-            lh_file = os.path.join(roi_defs_dir, f"lh.{roi_file}.npy")
-            rh_file = os.path.join(roi_defs_dir, f"rh.{roi_file}.npy")
-            maskdata_lh = np.load(lh_file, allow_pickle=True)
-            maskdata_rh = np.load(rh_file, allow_pickle=True)
+    # load the roi masks
+    try:
+        lh_file = os.path.join(roi_defs_dir, f"lh.{roi_file}.mgz")
+        rh_file = os.path.join(roi_defs_dir, f"rh.{roi_file}.mgz")
+        maskdata_lh = nb.load(lh_file).get_fdata().squeeze()
+        maskdata_rh = nb.load(rh_file).get_fdata().squeeze()
+    except ValueError:
+        lh_file = os.path.join(roi_defs_dir, f"lh.{roi_file}.npy")
+        rh_file = os.path.join(roi_defs_dir, f"rh.{roi_file}.npy")
+        maskdata_lh = np.load(lh_file, allow_pickle=True)
+        maskdata_rh = np.load(rh_file, allow_pickle=True)
 
-        maskdata = np.hstack((maskdata_lh, maskdata_rh))
+    maskdata = np.hstack((maskdata_lh, maskdata_rh))
 
-        return maskdata, roi_id2name        
+    return maskdata, roi_id2name        
 
 class FmriDataset(Dataset):
     def __init__(self, args):

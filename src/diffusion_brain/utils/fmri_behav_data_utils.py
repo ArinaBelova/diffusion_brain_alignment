@@ -5,6 +5,9 @@ import numpy as np
 import pandas as pd
 import glob 
 import re
+import torch
+import nibabel as nb
+from filelock import FileLock
 
 from torch.utils.data import Subset
 
@@ -113,7 +116,7 @@ def get_subject_conditions(behav_data_root, subj, n_sessions, keep_only_3repeats
 
 
 def get_train_test_indices(args):
-    overall_cond_ann = np.load(os.path.join(args.data.behav_data_root, args.data.subj + "_all_conditions.npy"), allow_pickle=True)
+    overall_cond_ann = np.load(os.path.join(args.data.behav_data_root, args.data.subj + "_all_conditions.npy"), allow_pickle=True) 
     
     test_cond_ann = np.load(os.path.join(args.data.behav_data_root, "common_515_indices.npy"), allow_pickle=True)
     train_cond_ann = np.array([i for i in overall_cond_ann if i not in test_cond_ann])
@@ -134,3 +137,81 @@ def get_train_test_subsets(fmri_dataset, activations_dataset, args):
     test_activations_dataset = Subset(activations_dataset, test_cond_ann)
 
     return train_fmri_dataset, test_fmri_dataset, train_activations_dataset, test_activations_dataset
+
+
+################### fmri utils ########################
+def get_roi_mask(args):
+    """Load ROI mask and return voxel indices."""
+    roi_defs_dir = args.data.roi_defs_dir
+    roi_file = args.data.roi_file
+    roi = args.data.roi
+    
+    # Load left and right hemisphere masks
+    try:
+        lh_file = os.path.join(roi_defs_dir, f"lh.{roi_file}.mgz")
+        rh_file = os.path.join(roi_defs_dir, f"rh.{roi_file}.mgz")
+        maskdata_lh = nb.load(lh_file).get_fdata().squeeze()
+        maskdata_rh = nb.load(rh_file).get_fdata().squeeze()
+    except FileNotFoundError:
+        lh_file = os.path.join(roi_defs_dir, f"lh.{roi_file}.npy")
+        rh_file = os.path.join(roi_defs_dir, f"rh.{roi_file}.npy")
+        maskdata_lh = np.load(lh_file)
+        maskdata_rh = np.load(rh_file)
+    
+    maskdata = np.hstack((maskdata_lh, maskdata_rh))
+    roi_indices = np.where(maskdata == roi)[0]
+    
+    return roi_indices
+
+
+def preprocess_fmri_roi(args):
+    """
+    Extract ROI voxels from full fMRI data and save.
+    Returns tensor [n_samples, n_roi_voxels]
+    """
+    print(f"Preprocessing fMRI ROI: {args.data.roi}")
+    
+    # 1. Get ROI voxel indices
+    roi_indices = get_roi_mask(args)
+    print(f"ROI {args.data.roi}: {len(roi_indices)} voxels")
+    
+    # 2. Load full betas (memory-mapped)
+    fmri_path = os.path.join(args.data.fmri_data_root, f"{args.data.subj}_{args.data.fmri_data_name}")
+    full_betas = np.load(fmri_path, mmap_mode='r')  # [n_voxels, n_samples]
+    
+    # 3. Extract ROI voxels
+    roi_betas = full_betas[roi_indices, :].T  # [n_samples, n_roi_voxels]
+    roi_betas = torch.from_numpy(roi_betas.copy()).float()
+    
+    # 4. Save
+    save_path = os.path.join(args.data.roi_defs_dir, f"roi_preselected", f"{args.data.roi_file}", f"{args.data.subj}_{args.data.roi}.pt")
+    if not os.path.exists(os.path.dirname(save_path)):
+        os.makedirs(os.path.dirname(save_path))
+    torch.save(roi_betas, save_path)
+    
+    # Also save ROI indices for reference
+    roi_indices_path = os.path.join(args.data.roi_defs_dir, f"roi_indices", f"{args.data.roi}.npy")
+    np.save(roi_indices_path, roi_indices)
+    
+    print(f"Saved ROI betas to {save_path}, shape: {roi_betas.shape}")
+    
+    return roi_betas, save_path
+
+
+def ensure_fmri_roi_exists(args):
+    """Thread-safe check and preprocessing for fMRI ROI data."""
+    save_path = os.path.join(
+        args.data.roi_defs_dir, f"roi_preselected", 
+        f"{args.data.roi_file}",
+        f"{args.data.subj}_{args.data.roi}.pt"
+    )
+    lock_path = save_path + ".lock"
+    
+    with FileLock(lock_path):
+        if not os.path.isfile(save_path):
+            print(f"fMRI ROI data not found at {save_path}. Preprocessing...")
+            preprocess_fmri_roi(args)
+        else:
+            print(f"fMRI ROI data found at {save_path}")
+    
+    return save_path
