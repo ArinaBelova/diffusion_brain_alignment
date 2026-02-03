@@ -27,11 +27,14 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
     if args.data.data_name == "ann-brain":
         # for ann-brain data we have a continuous label vector representation instead of discrete num_classes
         masked_labels = label * (1 - mask[:, None])
+        print("Masked lables shape in score estimation: ", masked_labels.shape, flush=True)
+        encoder_hidden_states = masked_labels.unsqueeze(1).float()
+        class_labels_arg = None
     else:    
         masked_labels = label * (1 - mask) + (args.model.num_classes * mask) # don't use -1 as the empty label as nn.Embedding will throw error
     masked_labels = masked_labels.long()    
 
-    if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
+    if args.model.name in ["unet-diffusers", "unet-diffusers-1d"]:
         # class_embeddings = score_fn.class_embedding(masked_labels)  # shape [bs, cross_attn_dim]
         # class_embeddings = class_embeddings.unsqueeze(1)  # shape [bs, 1, cross_attn_dim]
         # print(f"encoder_hidden_states shape: {class_embeddings.shape}")
@@ -42,9 +45,9 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
         t = t * 999
         #######################
 
-        encoder_hidden_states = torch.zeros(x_t.shape[0], 1, args.model.cross_attention_dim, device=x_t.device)
+        # encoder_hidden_states = torch.zeros(x_t.shape[0], 1, args.model.cross_attention_dim, device=x_t.device)
 
-        predicted_score = score_fn(x_t, t, encoder_hidden_states = encoder_hidden_states, class_labels=masked_labels).sample    # encoder_hidden_states=None,
+        predicted_score = score_fn(x_t, t, encoder_hidden_states = encoder_hidden_states, class_labels=class_labels_arg).sample    # class_labels=masked_labels  and zeros encoder_hidden_states for MNIST case
     else:
         predicted_score = score_fn(x_t, t, masked_labels)
 

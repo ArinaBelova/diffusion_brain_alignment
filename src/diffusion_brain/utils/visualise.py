@@ -7,7 +7,7 @@ import numpy as np
 import cortex
 import plotly
 
-def visualise_and_save_results(generated_samples, step, args):
+def visualise_and_save_results(generated_samples, valid_dataloader, step, args):
     generated_samples = generated_samples.cpu().numpy()
     if args.data.data_name == "toy":
         # for toy data we need to plot scatter plots

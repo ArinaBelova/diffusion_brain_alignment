@@ -36,7 +36,8 @@ def set_model(args):
             #norm_num_groups=8,
             # cross_attention_dim=args.model.cross_attention_dim, # I don't want to have cross-attention, may come handy when I do the full project
             cross_attention_dim=args.model.cross_attention_dim,
-            num_class_embeds=args.model.num_classes + 1)
+            num_class_embeds = None)
+            # num_class_embeds=args.model.num_classes + 1)
         
         # playing around to figure out how to do conditioning on this model:
         # result@ don't change this class embedding!
