@@ -6,8 +6,10 @@ from matplotlib import pyplot as plt
 import numpy as np
 import cortex
 import plotly
+from sklearn.metrics import r2_score
 
-def visualise_and_save_results(generated_samples, valid_dataloader, step, args):
+def visualise_and_save_results(generated_samples, valid_dataloader, step, args, **kwargs):
+    # Use kwargs for additional arguments
     generated_samples = generated_samples.cpu().numpy()
     if args.data.data_name == "toy":
         # for toy data we need to plot scatter plots
@@ -25,9 +27,15 @@ def visualise_and_save_results(generated_samples, valid_dataloader, step, args):
         plt.close(fig)
     elif args.data.data_name == "ann-brain":
         generated_samples = generated_samples[0] # take the first element of the batch for visualisation
-        print("Generated samples shape: ", generated_samples.shape)
-        print("Generated samples type: ", type(generated_samples))
+        generated_samples = np.squeeze(generated_samples)
         pyplot_brain(generated_samples, args=args, savename=f"generated_samples_step_{step}", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png')
+
+        # plot r2 correlation
+        pyplot_brain(kwargs["r2_scores_across_batch_images"], args=args, savename=f"r2_scores_across_batch_images_step_{step}", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png')
+        wandb.log({
+            "mean_r2_scores_across_batch_images": np.mean(kwargs["r2_scores_across_batch_images"]),
+            "mean_r2_scores_across_voxels": np.mean(kwargs["r2_scores_across_voxels"])
+        })
     else:    
         generated_samples = torch.clip(generated_samples, 0.0, 1.0)
         grid_to_display = torchvision.utils.make_grid(generated_samples, nrow=int(np.sqrt(args.validation.batch_size)))
@@ -61,7 +69,7 @@ def pyplot_brain(fsavg_data, savename, figpath, args, save_type='png', max_cmap_
     fig = plt.gcf()
 
     #wandb.log({f"{savename}": wandb.Html(plotly.io.to_html(fig))})
-    wandb.log({f"{savename}": wandb.Image(fig)})
+    wandb.log({f"generated_samples": wandb.Image(fig)})
 
     fig.suptitle(f'{savename} - max abs val: {np.nanmax(np.abs(fsavg_data)):.2f}')
     plt.savefig(f'{figpath}/{savename}.{save_type}', dpi=600)

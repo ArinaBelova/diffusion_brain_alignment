@@ -30,20 +30,19 @@ data:
   ann_model_weights: "ResNet50_Weights.IMAGENET1K_V2"
   ann_activations_data_path: './src/diffusion_brain/data/ann_activations/'
   layer_name: "avgpool"
-  ann_input_size: 256
-  roi: 1 # do the correct indexing as described in roi_defs/streams.mgz.ctab
+  roi: 5 # do the correct indexing as described in roi_defs/streams.mgz.ctab
   roi_defs_dir: './src/diffusion_brain/data/roi_defs/'
   roi_file: "streams" # can be HCP_MMP1 or nsdgeneral
 
 # need to wire up the model arguments' with UNet class definition
 model:
-  name: unet-diffusers #gfdm-unet #unet-diffusers # unet
+  name: gfdm-unet-1d-cond #unet-diffusers #gfdm-unet #unet-diffusers # unet
   input_size: 32
   num_classes: 10
   c_in: 1
   c_out: 1
   time_dim: 256
-  cross_attention_dim: 128
+  cross_attention_dim: 2048 # it should be equal to dimensionality of conditioning vector!
   dropout_prob: 0.2 # label dropout in classifier-free training
   remove_deep_conv: false
   save_freq: 500
@@ -64,7 +63,7 @@ optim:
   # patience: 50
 
 train:
-  steps: 1000 #2000
+  steps: 10000 #2000 # train steps
   image_size: 32
   batch_size: 32
   dataset_size: 9485 # 10000 - 515 images as train
@@ -79,8 +78,8 @@ train:
 
 validation:
   eval_freq: 100
-  batch_size: 32 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
-  n_steps: 1000
+  batch_size: 256 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
+  n_steps: 100 # SDE steps
   guidance_scale: 0.0 #0.8
   label_to_generate: 5
   output_folder: './outputs/ann-brain/'

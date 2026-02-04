@@ -81,13 +81,22 @@ def validate_and_visualise(clf, true_activations_dataset, true_fmri_dataset, arg
     pyplot_brain(difference.mean(axis=0), args=args, savename=f"roi_{args.data.roi}_difference_mse_step_{step}", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png')
 
     print("Visualising r2 correlation between true and predicted fMRI data...", flush=True)
-    r2_scores = []
+    r2_scores_across_images = []
+    r2_scores_across_voxels = []
+
+    for img_idx in range(true_fmri_dataset.shape[0]):
+        r2_voxel = pearsonr(fmri_predicted[img_idx, :], true_fmri_dataset[img_idx, :])[0]
+        r2_scores_across_voxels.append(r2_voxel)
+    r2_scores_across_voxels = np.array(r2_scores_across_voxels)
+
     for voxel_idx in range(true_fmri_dataset.shape[1]):
-        r2 = pearsonr(fmri_predicted[:, voxel_idx], true_fmri_dataset[:, voxel_idx])[0]
-        r2_scores.append(r2)
-    r2_scores = np.array(r2_scores)
-    pyplot_brain(r2_scores, args=args, savename=f"roi_{args.data.roi}_r2_scores_step_{step}", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png')
- 
+        r2_img = pearsonr(fmri_predicted[:, voxel_idx], true_fmri_dataset[:, voxel_idx])[0]
+        r2_scores_across_images.append(r2_img)
+    r2_scores_across_images = np.array(r2_scores_across_images)
+    pyplot_brain(r2_scores_across_images, args=args, savename=f"roi_{args.data.roi}_r2_scores_step_{step}", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png')
+    wandb.log({f"mean r2_scores_across_images_step_{step}": r2_scores_across_images.mean()})
+    wandb.log({f"mean r2_scores_across_voxels_step_{step}": r2_scores_across_voxels.mean()})
+
     print("Visualising RDM on test dataset: ", flush=True)
     rdms_true_test_fmri = compute_rdm(true_fmri_dataset, args, regime="test")
     rdms_predicted_test_fmri = compute_rdm(fmri_predicted, args, regime="test")

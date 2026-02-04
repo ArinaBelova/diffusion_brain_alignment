@@ -1,6 +1,7 @@
 from diffusion_brain.models.unet import UNet
 from diffusion_brain.models.dit import DiT
 from diffusion_brain.models.gfdm_models.unet import GFDM_UNetModel
+from diffusion_brain.models.gfdm_models.cond_unet_1d import GFDM_UNet1DConditional
 from diffusion_brain.models.mlp import ToyDiffusionMLP
 
 import torch 
@@ -56,6 +57,18 @@ def set_model(args):
             channel_mult=(1,2,4), # given by default but in larger resultion
             dims=2, # 2 for mnist
             dropout=0, # resnet dropout prob, not classifier-free dropout
+        )
+    elif args.model.name == "gfdm-unet-1d-cond":
+        print("Setting GFDM UNet 1D conditional model")
+        model = GFDM_UNet1DConditional(
+            in_channels=args.model.c_in,
+            model_channels=64,
+            out_channels=args.model.c_out,
+            num_res_blocks=3,
+            attention_resolutions=(32, 16), # (4, 2)
+            cond_dim=args.model.cross_attention_dim,
+            channel_mult=(1, 2, 4),
+            dropout=0,
         )
     elif args.model.name == "toy-mlp":
         print("Setting Toy Diffusion MLP model")

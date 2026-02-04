@@ -78,6 +78,7 @@ def get_ann_brain_dataloader(args):
         batch_size=args.train.batch_size,
         shuffle=True,
         num_workers=args.train.num_workers,
+        drop_last=True
     )
 
     test_dataloader = torch.utils.data.DataLoader(
@@ -85,5 +86,6 @@ def get_ann_brain_dataloader(args):
         batch_size=args.validation.batch_size,
         shuffle=False,
         num_workers=args.validation.num_workers,
+        drop_last=True
     )
     return train_dataloader, test_dataloader    

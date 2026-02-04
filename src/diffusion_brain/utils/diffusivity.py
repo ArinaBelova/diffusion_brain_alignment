@@ -125,6 +125,7 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
             guidance_scale: float = 1.0,
             label: int = 1,
             num_classes: int = 10,
+            cond: torch.Tensor = None,
             device="cpu",
             args=None,
             **kwargs
@@ -155,6 +156,10 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
             if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
                 encoder_hidden_states = torch.zeros(x.shape[0], 1, args.model.cross_attention_dim, device=x.device)
                 score = score_fn(x, t, encoder_hidden_states = encoder_hidden_states, class_labels = y_target).sample / torch.sqrt(diffusion_process.var(t))
+            elif args.model.name == "gfdm-unet-1d-cond":
+                if cond is None:
+                    cond = torch.zeros(x.shape[0], args.model.cross_attention_dim, device=x.device)
+                score = score_fn(x, t, cond) / torch.sqrt(diffusion_process.var(t))
             else:
                 score = score_fn(x, t, y_target) / torch.sqrt(diffusion_process.var(t))
         else:
@@ -174,6 +179,12 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
 
                 score_uncond = score_fn(x, time_unet, encoder_hidden_states = encoder_hidden_states, class_labels=y_empty).sample
                 score_cond = score_fn(x, time_unet, encoder_hidden_states = encoder_hidden_states, class_labels=y_target).sample
+            elif args.model.name == "gfdm-unet-1d-cond":
+                if cond is None:
+                    cond = torch.zeros(x.shape[0], args.model.cross_attention_dim, device=x.device)
+                cond_uncond = torch.zeros_like(cond)
+                score_uncond = score_fn(x, t, cond_uncond)
+                score_cond = score_fn(x, t, cond)
             else:
                 score_uncond = score_fn(x, t, y_empty)
                 score_cond = score_fn(x, t, y_target)
@@ -206,11 +217,18 @@ def generate_samples(num_samples: int,
                      model: nn.Module,
                      diffusion_process: StandardDiffusion,
                      args,
-                     device):
+                     device,
+                     cond: torch.Tensor = None):
     """Function to generate samples from the learned diffusion model"""
     # initial samples from p_T
     if args.data.data_name == "toy":
         dim_x = [args.model.input_size]
+    elif args.model.name == "gfdm-unet-1d-cond":
+        orig_len = args.model.input_size
+        factor = getattr(model, "downsample_factor", 1)
+        pad_len = (factor - (orig_len % factor)) % factor if factor > 1 else 0
+        padded_len = orig_len + pad_len
+        dim_x = (args.model.c_in, padded_len)
     else:
         dim_x = (args.model.c_in, args.model.input_size, args.model.input_size)
 
@@ -227,11 +245,14 @@ def generate_samples(num_samples: int,
         guidance_scale=args.validation.guidance_scale,
         label=args.validation.label_to_generate,
         num_classes=args.model.num_classes,
+        cond=cond,
         score_scaling=True,
         device=device,
         args=args
     )
 
+    if args.model.name == "gfdm-unet-1d-cond":
+        x_0 = x_0[..., :orig_len]
     return x_0 # * 255 as I don't really know what scale the model learned...
 
 class VESDE(StandardDiffusion):

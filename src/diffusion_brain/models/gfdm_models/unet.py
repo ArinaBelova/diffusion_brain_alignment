@@ -516,7 +516,6 @@ class GFDM_UNetModel(nn.Module):
 
     def __init__(
         self,
-        image_size,
         in_channels,
         model_channels,
         out_channels,
@@ -541,7 +540,6 @@ class GFDM_UNetModel(nn.Module):
         if num_heads_upsample == -1:
             num_heads_upsample = num_heads
 
-        self.image_size = image_size
         self.in_channels = in_channels
         self.model_channels = model_channels
         self.out_channels = out_channels
