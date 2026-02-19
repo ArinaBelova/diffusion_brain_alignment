@@ -150,55 +150,59 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
         t = torch.tensor([t]).to(device)
         determ_drift = f(x, t)
         z = torch.randn(n_traj, *dim_x).to(device) 
-        diffusivity_sample = g(x, t) * torch.sqrt(torch.abs(dt)) * z 
-
-        if guidance_scale == 1.0:
-            if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
-                encoder_hidden_states = torch.zeros(x.shape[0], 1, args.model.cross_attention_dim, device=x.device)
-                score = score_fn(x, t, encoder_hidden_states = encoder_hidden_states, class_labels = y_target).sample / torch.sqrt(diffusion_process.var(t))
-            elif args.model.name == "gfdm-unet-1d-cond":
-                if cond is None:
-                    cond = torch.zeros(x.shape[0], args.model.cross_attention_dim, device=x.device)
-                score = score_fn(x, t, cond) / torch.sqrt(diffusion_process.var(t))
-            else:
-                score = score_fn(x, t, y_target) / torch.sqrt(diffusion_process.var(t))
+        if idx != len(time_grid) - 1:
+            diffusivity_sample = g(x, t) * torch.sqrt(torch.abs(dt)) * z 
         else:
-            if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
+            diffusivity_sample = 0.0 
 
-                #######################
-                time_unet = t * 999
-                #######################
-                
-                encoder_hidden_states = torch.zeros(x.shape[0], 1, args.model.cross_attention_dim, device=x.device)
+        # TODO: do we really need this clause? It's already covered by below guidance_scale logic
+        # if guidance_scale == 1.0:
+        #     if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
+        #         encoder_hidden_states = torch.zeros(x.shape[0], 1, args.model.cross_attention_dim, device=x.device)
+        #         score = score_fn(x, t, encoder_hidden_states = encoder_hidden_states, class_labels = y_target).sample / torch.sqrt(diffusion_process.var(t))
+        #     elif args.model.name == "gfdm-unet-1d-cond":
+        #         if cond is None:
+        #             cond = torch.zeros(x.shape[0], args.model.cross_attention_dim, device=x.device)
+        #         score = score_fn(x, t, cond) / torch.sqrt(diffusion_process.var(t))
+        #     else:
+        #         score = score_fn(x, t, y_target) / torch.sqrt(diffusion_process.var(t))
+        # else:
+        if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
 
-                # print("y_empty:", y_empty.device, y_empty.shape, y_empty.dtype)
-                # print("y_target:", y_target.device, y_target.shape, y_target.dtype)
-                # print("x: ", x.device, x.shape, x.dtype)
-                # print("t: ", t.device, t.shape, t.dtype)
-                # print("encoder_hidden_states: ", encoder_hidden_states.device, encoder_hidden_states.shape, encoder_hidden_states.dtype)
-
-                score_uncond = score_fn(x, time_unet, encoder_hidden_states = encoder_hidden_states, class_labels=y_empty).sample
-                score_cond = score_fn(x, time_unet, encoder_hidden_states = encoder_hidden_states, class_labels=y_target).sample
-            elif args.model.name == "gfdm-unet-1d-cond":
-                if cond is None:
-                    cond = torch.zeros(x.shape[0], args.model.cross_attention_dim, device=x.device)
-                cond_uncond = torch.zeros_like(cond)
-                score_uncond = score_fn(x, t, cond_uncond)
-                score_cond = score_fn(x, t, cond)
-            else:
-                score_uncond = score_fn(x, t, y_empty)
-                score_cond = score_fn(x, t, y_target)
+            #######################
+            time_unet = t * 999
+            #######################
             
-            score = ((1 - guidance_scale) * score_uncond + guidance_scale * score_cond) / torch.sqrt(diffusion_process.var(t))
+            encoder_hidden_states = torch.zeros(x.shape[0], 1, args.model.cross_attention_dim, device=x.device)
 
-            # DEBUG: Check if scores differ by label#################################
-            # if idx == 0:  # Only at first timestep
-            #     diff_norm = (score_cond - score_uncond).norm()
-            #     print(f"t={t.item():.3f} | label={y_target[0].item()} | "
-            #         f"score_cond norm={score_cond.norm():.4f} | "
-            #         f"score_uncond norm={score_uncond.norm():.4f} | "
-            #         f"difference norm={diff_norm:.4f}")
-            ##################################################################
+            # print("y_empty:", y_empty.device, y_empty.shape, y_empty.dtype)
+            # print("y_target:", y_target.device, y_target.shape, y_target.dtype)
+            # print("x: ", x.device, x.shape, x.dtype)
+            # print("t: ", t.device, t.shape, t.dtype)
+            # print("encoder_hidden_states: ", encoder_hidden_states.device, encoder_hidden_states.shape, encoder_hidden_states.dtype)
+
+            score_uncond = score_fn(x, time_unet, encoder_hidden_states = encoder_hidden_states, class_labels=y_empty).sample
+            score_cond = score_fn(x, time_unet, encoder_hidden_states = encoder_hidden_states, class_labels=y_target).sample
+        elif args.model.name == "gfdm-unet-1d-cond":
+            if cond is None:
+                cond = torch.zeros(x.shape[0], args.model.cross_attention_dim, device=x.device)
+            cond_uncond = torch.zeros_like(cond).to(device)
+            score_uncond = score_fn(x, t, cond_uncond)
+            score_cond = score_fn(x, t, cond)
+        else:
+            score_uncond = score_fn(x, t, y_empty)
+            score_cond = score_fn(x, t, y_target)
+        
+        score = ((1 - guidance_scale) * score_uncond + guidance_scale * score_cond) / torch.sqrt(diffusion_process.var(t))
+
+        # DEBUG: Check if scores differ by label#################################
+        # if idx == 0:  # Only at first timestep
+        #     diff_norm = (score_cond - score_uncond).norm()
+        #     print(f"t={t.item():.3f} | label={y_target[0].item()} | "
+        #         f"score_cond norm={score_cond.norm():.4f} | "
+        #         f"score_uncond norm={score_uncond.norm():.4f} | "
+        #         f"difference norm={diff_norm:.4f}")
+        ##################################################################
             
         # print("x shape ", x.shape)
         # print("t shape ", t.shape)
@@ -207,10 +211,15 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
         # print("diffusivity_sample shape ", diffusivity_sample.shape)
         # print("g(x, t)**2  shape ", (g(x, t)**2).shape)
 
-        next_step = x + (determ_drift - g(x, t)**2 * score) * dt + diffusivity_sample
+        if args.validation.ode:
+            next_step = x + (determ_drift - 0.5 * g(x, t)**2 * score) * dt
+        else:
+            next_step = x + (determ_drift - g(x, t)**2 * score) * dt + diffusivity_sample
+
         x_traj.append(next_step)
     
-    return torch.stack(x_traj), next_step
+    #return torch.stack(x_traj), next_step
+    return next_step 
 
 @torch.inference_mode()
 def generate_samples(num_samples: int,
@@ -226,17 +235,24 @@ def generate_samples(num_samples: int,
     elif args.model.name == "gfdm-unet-1d-cond":
         orig_len = args.model.input_size
         factor = getattr(model, "downsample_factor", 1)
-        pad_len = (factor - (orig_len % factor)) % factor if factor > 1 else 0
+        if factor > 1 and orig_len % factor != 0:
+            pad_len = (factor - (orig_len % factor)) % factor
+        else:
+            pad_len = 0
         padded_len = orig_len + pad_len
         dim_x = (args.model.c_in, padded_len)
+        args.validation.label_to_generate = 1 # in reality we don't use it, it's just a stab
     else:
         dim_x = (args.model.c_in, args.model.input_size, args.model.input_size)
 
     noise = torch.randn(size=(num_samples, *dim_x), device=device)
-    mu, std = diffusion_process.brown_moments(torch.zeros(num_samples, *dim_x).to(device), diffusion_process.T)
-    x_T = mu + std * noise
+    _, std = diffusion_process.brown_moments(torch.zeros(num_samples, *dim_x).to(device), diffusion_process.T)
 
-    _, x_0 = run_reverse_sde(
+    # print("in generate_samples mu and std shapes:", mu.shape, std.shape, flush=True)
+    
+    x_T = std * noise # + mu
+    # was _, x_0 as we had also trajectory tracked, but no need for that for the sake of generation speed
+    x_0 = run_reverse_sde(
         diffusion_process=diffusion_process,
         x_0=x_T, # .cpu().numpy()
         score_fn=model,
@@ -253,6 +269,8 @@ def generate_samples(num_samples: int,
 
     if args.model.name == "gfdm-unet-1d-cond":
         x_0 = x_0[..., :orig_len]
+
+    # print("x_0 and label shapes are: ", x_0.shape, cond.shape, flush=True)    
     return x_0 # * 255 as I don't really know what scale the model learned...
 
 class VESDE(StandardDiffusion):

@@ -8,10 +8,7 @@ import wandb
 
 from diffusion_brain.data_utils import get_dataloader
 from diffusion_brain.utils.setup import parse_args_and_setup_wandb
-from diffusion_brain.utils.visualise import visualise_and_save_results
 from diffusion_brain.utils.fmri_behav_data_utils import get_train_test_subsets, compute_rdm
-from diffusion_brain.datasets.fmri_betas_dataset import FmriDataset
-from diffusion_brain.datasets.ann_activations_dataset import AnnActivationsDataset
 from diffusion_brain.utils.visualise import pyplot_brain
 
 def get_train_test_numpy_datasets(train_dataloader, test_dataloader, args):
@@ -106,12 +103,23 @@ def validate_and_visualise(clf, true_activations_dataset, true_fmri_dataset, arg
 
 def main():
     args = parse_args_and_setup_wandb()
-    args.train.batch_size = 9485 # set to the full training set size
-    args.validation.batch_size = 515 # set to the full test set size
+    # just to get batch_size for the train dataloader correctly:
     train_dataloader, test_dataloader = get_dataloader(args)
-
-    train_fmri_dataset, test_fmri_dataset, train_activations_dataset, test_activations_dataset = get_train_test_numpy_datasets(train_dataloader, test_dataloader, args)
-
+    args.train.batch_size = len(train_dataloader.dataset) # set to the full training set size, not always 9485
+    args.validation.batch_size = 515 # set to the full test set size
+    # get correctly shaped dataloaders with the updated batch sizes:
+    train_dataloader, test_dataloader = get_dataloader(args)
+    print(f"Length of the TRAIN dataset: {args.train.batch_size}", flush=True)
+    #train_fmri_dataset, test_fmri_dataset, train_activations_dataset, test_activations_dataset = get_train_test_numpy_datasets(train_dataloader, test_dataloader, args)
+    #################### TEST ###############################
+    train_fmri_dataset, _, train_activations_dataset, _ = get_train_test_numpy_datasets(train_dataloader, test_dataloader, args)
+    args.data.subj = "subj04"
+    train_dataloader, test_dataloader = get_dataloader(args)
+    args.train.batch_size = len(test_dataloader.dataset) # set to the full test set size
+    print("Length of TEST dataset: ", args.train.batch_size, flush=True)
+    train_dataloader, test_dataloader = get_dataloader(args)
+    _, test_fmri_dataset, _, test_activations_dataset = get_train_test_numpy_datasets(train_dataloader, test_dataloader, args)
+    #########################################################
     # print("max of train fmri indexes:", train_fmri_dataset.indices.max(), flush=True)
     # print("max of test fmri indexes:", test_fmri_dataset.indices.max(), flush=True)
     # print("max of train activations indexes:", train_activations_dataset.indices.max(), flush=True)

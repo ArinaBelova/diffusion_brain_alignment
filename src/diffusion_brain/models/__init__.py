@@ -16,7 +16,15 @@ def set_model(args):
         model = UNet(args)
     elif args.model.name == "dit":
         print("Setting DiT model")
-        model = DiT(args)    
+        model = DiT(depth=args.model.depth,
+                    hidden_size=args.model.hidden_size,
+                    patch_size=1,
+                    num_heads=args.model.num_heads,
+                    input_size=args.model.input_size,
+                    in_channels=args.model.c_in,
+                    class_dropout_prob=args.model.dropout_prob,
+                    num_classes=None,
+                    label_dim=args.model.cross_attention_dim,) # for continuous labels, we can just use an MLP to embed them into the same space as timestep embeddings)    
     elif args.model.name == "unet-diffusers":
         print("Setting UNet model from diffusers library")
         model = UNet2DConditionModel(
@@ -65,7 +73,7 @@ def set_model(args):
             model_channels=64,
             out_channels=args.model.c_out,
             num_res_blocks=3,
-            attention_resolutions=(32, 16), # (4, 2)
+            attention_resolutions=(), # (4, 2)
             cond_dim=args.model.cross_attention_dim,
             channel_mult=(1, 2, 4),
             dropout=0,

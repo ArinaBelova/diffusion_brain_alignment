@@ -1,6 +1,8 @@
 wandb:
   project_name: conditional-diffusion-brain
 
+state: train 
+
 diffusion:
   diffusion_type: vp
   T: 1.0 #1000.0 # 1.0
@@ -20,7 +22,7 @@ diffusion:
 # do i want to have a joint dataloader that will take care of both ANN and fmri data? 
 data:
   data_name: ann-brain
-  num_sessions: 40 # may need to separate it for train/test somehow 
+  #num_sessions: 40 # may need to separate it for train/test somehow 
   images_data_path: './src/diffusion_brain/data/data_coco/'
   behav_data_root: './src/diffusion_brain/data/behav/'
   subj: "subj01"
@@ -30,23 +32,34 @@ data:
   ann_model_weights: "ResNet50_Weights.IMAGENET1K_V2"
   ann_activations_data_path: './src/diffusion_brain/data/ann_activations/'
   layer_name: "avgpool"
-  roi: 5 # do the correct indexing as described in roi_defs/streams.mgz.ctab
+  roi: 18 #5 #18 #10 #5 # do the correct indexing as described in roi_defs/streams.mgz.ctab
   roi_defs_dir: './src/diffusion_brain/data/roi_defs/'
-  roi_file: "streams" # can be HCP_MMP1 or nsdgeneral
+  roi_file: "HCP_MMP1" #"HCP_MMP1" # can be streams or HCP_MMP1 or nsdgeneral
 
 # need to wire up the model arguments' with UNet class definition
 model:
-  name: gfdm-unet-1d-cond #unet-diffusers #gfdm-unet #unet-diffusers # unet
-  input_size: 32
-  num_classes: 10
+  name: dit #gfdm-unet-1d-cond #unet-diffusers #gfdm-unet #unet-diffusers # unet
+  #input_size: 32
+  num_classes: 10 # it needs to be removed later when refactoring diffusivity.py as in ann-brain case we have continuous conditioning vector and not class labels; 
   c_in: 1
   c_out: 1
   time_dim: 256
-  cross_attention_dim: 2048 # it should be equal to dimensionality of conditioning vector!
+  #cross_attention_dim: 2048 # it should be equal to dimensionality of conditioning vector!
+  ######### dit############## depth=12, hidden_size=384, patch_size=8, num_heads=6
+  num_heads: 12
+  depth: 12
+  hidden_size: 768
+  ###########################
   dropout_prob: 0.2 # label dropout in classifier-free training
   remove_deep_conv: false
   save_freq: 500
   output_folder: './model_outputs/ann-brain/'
+  use_autoencoder: false
+  ae_save_path: './model_outputs/ann-brain/autoencoder/'
+  ae_name: 'ae_linear.pt'
+  ae_latent_dim: 1024
+  ae_epochs: 50
+  ae_lr: 1.e-4
 
 optim:
   loss: mse
@@ -64,8 +77,7 @@ optim:
 
 train:
   steps: 10000 #2000 # train steps
-  image_size: 32
-  batch_size: 32
+  batch_size: 64
   dataset_size: 9485 # 10000 - 515 images as train
   num_workers: 4
 
@@ -77,10 +89,10 @@ train:
 #   label_to_generate: 8
 
 validation:
+  ode: false
   eval_freq: 100
   batch_size: 256 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
   n_steps: 100 # SDE steps
-  guidance_scale: 0.0 #0.8
-  label_to_generate: 5
-  output_folder: './outputs/ann-brain/'
+  guidance_scale: 10.0 #0.8
+  output_folder: '/outputs/ann-brain/'
   num_workers: 1

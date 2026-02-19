@@ -170,7 +170,7 @@ def preprocess_fmri_roi(args):
     Extract ROI voxels from full fMRI data and save.
     Returns tensor [n_samples, n_roi_voxels]
     """
-    print(f"Preprocessing fMRI ROI: {args.data.roi}")
+    print(f"Preprocessing fMRI ROI: {args.data.roi}", flush=True)
     
     # 1. Get ROI voxel indices
     roi_indices = get_roi_mask(args)
@@ -191,7 +191,10 @@ def preprocess_fmri_roi(args):
     torch.save(roi_betas, save_path)
     
     # Also save ROI indices for reference
-    roi_indices_path = os.path.join(args.data.roi_defs_dir, f"roi_indices", f"{args.data.roi}.npy")
+    roi_indices_path = os.path.join(args.data.roi_defs_dir, f"roi_indices",  f"{args.data.roi_file}", f"{args.data.roi}.npy")
+    if not os.path.exists(os.path.dirname(roi_indices_path)):
+        os.makedirs(os.path.dirname(roi_indices_path))
+
     np.save(roi_indices_path, roi_indices)
     
     print(f"Saved ROI betas to {save_path}, shape: {roi_betas.shape}")
@@ -210,10 +213,10 @@ def ensure_fmri_roi_exists(args):
     
     with FileLock(lock_path):
         if not os.path.isfile(save_path):
-            print(f"fMRI ROI data not found at {save_path}. Preprocessing...")
+            print(f"fMRI ROI data not found at {save_path}. Preprocessing...", flush=True)
             preprocess_fmri_roi(args)
         else:
-            print(f"fMRI ROI data found at {save_path}")
+            print(f"fMRI ROI data found at {save_path}", flush=True)
     
     return save_path
 

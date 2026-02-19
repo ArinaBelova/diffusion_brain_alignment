@@ -8,7 +8,11 @@ def get_dataloader(args):
     elif args.data.data_name == "toy":
         train_dataloader, val_dataloader = get_toy_dataloader(args)    
     elif args.data.data_name == "ann-brain":
-        train_dataloader, val_dataloader = get_ann_brain_dataloader(args)    
+        if args.state == "train":
+            train_dataloader, val_dataloader = get_ann_brain_dataloader(args)
+        else:
+            val_dataloader = get_ann_brain_dataloader(args) 
+            train_dataloader = None       
     else:
         raise ValueError(f"Dataloader for dataset {args.data.data_name} is not yet implemented.")    
     return train_dataloader, val_dataloader

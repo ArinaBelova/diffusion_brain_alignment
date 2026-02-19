@@ -7,9 +7,8 @@ import torch
 import numpy as np
 import os
 
-from diffusion_brain.datasets.ann_activations_dataset import AnnActivationsDataset, PairedBrainAnnDataset, ensure_activations_exist
-# from diffusion_brain.datasets.fmri_betas_dataset import FmriDataset
-# from diffusion_brain.datasets.ann_activations_dataset_old import AnnActivationsDataset
+from diffusion_brain.datasets.paired_brain_ann_dataset import AnnActivationsDataset, PairedBrainAnnDataset
+from diffusion_brain.utils.ann_activations_utils import ensure_activations_exist
 from diffusion_brain.utils.fmri_behav_data_utils import get_train_test_subsets, get_train_test_indices, ensure_fmri_roi_exists
 
 class ZipDataset(Dataset):
@@ -40,10 +39,13 @@ class ZipDataset(Dataset):
 def get_ann_brain_dataloader(args):
     train_nsd_ids, test_nsd_ids, train_indices, test_indices = get_train_test_indices(args)
     
-    print("train_indices", train_indices.shape)
-    print("test_indices", test_indices.shape)
     # 2. Ensure fMRI ROI data exists (main process, thread-safe)
     fmri_roi_path = ensure_fmri_roi_exists(args)
+    
+    roi_indices_path = os.path.join(args.data.roi_defs_dir, "roi_indices", f"{args.data.roi_file}", f"{args.data.roi}.npy")
+    roi_indices = np.load(roi_indices_path, allow_pickle=True)
+    args.model.input_size = int(len(roi_indices))
+    print(f"Setting model.input_size to ROI voxel count: {args.model.input_size}")
     
     # 3. Ensure ANN activations exist (main process, thread-safe)
     train_activations_path = os.path.join(
@@ -73,6 +75,17 @@ def get_ann_brain_dataloader(args):
     )
     
     # 5. DataLoader
+    test_dataloader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=args.validation.batch_size,
+        shuffle=False,
+        num_workers=args.validation.num_workers,
+        drop_last=True
+    )
+
+    if args.state != "train":
+        return test_dataloader
+    
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.train.batch_size,
@@ -81,11 +94,4 @@ def get_ann_brain_dataloader(args):
         drop_last=True
     )
 
-    test_dataloader = torch.utils.data.DataLoader(
-        test_dataset,
-        batch_size=args.validation.batch_size,
-        shuffle=False,
-        num_workers=args.validation.num_workers,
-        drop_last=True
-    )
-    return train_dataloader, test_dataloader    
+    return train_dataloader, test_dataloader

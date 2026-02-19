@@ -26,4 +26,5 @@ pycortex
 scikit-learn
 plotly
 fracridge
+timm
 # dvc

@@ -13,10 +13,11 @@ from scipy.stats import pearsonr
 
 from diffusion_brain.utils.grad_updaters import set_loss_function, set_optimiser, set_learning_rate_scheduler 
 from diffusion_brain.models import set_model
+from diffusion_brain.models.autoencoder import LinearAutoencoder
 from diffusion_brain.data_utils import get_dataloader
 import diffusion_brain.utils.diffusivity as diffusivity
 from diffusion_brain.utils.setup import parse_args_and_setup_wandb
-from diffusion_brain.utils.visualise import visualise_and_save_results
+from diffusion_brain.utils.visualise import visualise_and_save_results, pyplot_brain
 from diffusion_brain.utils.fmri_behav_data_utils import ensure_fmri_roi_exists
 
 def pad_1d_to_factor(x, factor):
@@ -27,6 +28,84 @@ def pad_1d_to_factor(x, factor):
     if pad_len == 0:
         return x, 0
     return F.pad(x, (0, pad_len)), pad_len
+
+
+def train_linear_autoencoder(args, train_dataloader, device):
+    use_autoencoder = getattr(args.model, "use_autoencoder", args.model.name == "gfdm-unet-1d-cond")
+    if not use_autoencoder:
+        return None
+
+    latent_dim = getattr(args.model, "ae_latent_dim", 512)
+    ae_epochs = getattr(args.model, "ae_epochs", 10)
+    ae_lr = getattr(args.model, "ae_lr", 1e-3)
+    ae_save_path = getattr(args.model, "ae_save_path", None)
+    ae_name = getattr(args.model, "ae_name", "ae_linear.pt")
+
+    ae_save_path = os.path.join(ae_save_path, args.data.roi_file, ae_name + f"roi_{str(args.data.roi)}" + ".pth") if ae_save_path is not None else None
+
+    input_dim = args.model.input_size
+    autoencoder = LinearAutoencoder(input_dim=input_dim, latent_dim=latent_dim).to(device)
+
+    if ae_save_path is not None and os.path.isfile(ae_save_path):
+        autoencoder.load_state_dict(torch.load(ae_save_path, map_location=device))
+        autoencoder.eval()
+        for p in autoencoder.parameters():
+            p.requires_grad = False
+        print(f"Loaded autoencoder from {ae_save_path}")
+        args.model.ae_latent_dim = latent_dim
+        return autoencoder
+
+    print(f"Training linear autoencoder: input_dim={input_dim}, latent_dim={latent_dim}, epochs={ae_epochs}")
+    optimizer = torch.optim.Adam(autoencoder.parameters(), lr=ae_lr)
+    loss_fn = torch.nn.MSELoss()
+
+    autoencoder.train()
+    for epoch in range(ae_epochs):
+        epoch_loss = 0.0
+        num_batches = 0
+        for data, _ in train_dataloader:
+            x = data.float().to(device)
+            if x.ndim == 3:
+                x = x.squeeze(1)
+            optimizer.zero_grad()
+            x_hat, _ = autoencoder(x)
+            loss = loss_fn(x_hat, x)
+            loss.backward()
+            optimizer.step()
+            epoch_loss += loss.item()
+            num_batches += 1
+
+        avg_loss = epoch_loss / max(1, num_batches)
+        print(f"AE epoch {epoch + 1}/{ae_epochs} loss: {avg_loss:.6f}")
+        wandb.log({"autoencoder/loss": avg_loss, "autoencoder/epoch": epoch + 1})
+
+    autoencoder.eval()
+    for p in autoencoder.parameters():
+        p.requires_grad = False
+
+    print(f"Autoencoder training completed. Latent dim: {latent_dim}")
+    
+    # Log a sample reconstruction to wandb
+    autoencoder.eval()
+    with torch.no_grad():
+        sample_data, _ = next(iter(train_dataloader))
+        sample_data = sample_data[0].float().to(device) # take the first element of the batch
+        if sample_data.ndim == 3:
+            sample_data = sample_data.squeeze(1)
+        
+        latent = autoencoder.encoder(sample_data)
+        reconstructed = autoencoder.decoder(latent)
+        
+        pyplot_brain(sample_data.cpu().squeeze().numpy(), args=args, savename="original_sample", figpath=f"{args.validation.output_folder}/{args.jobid}/autoencoder", save_type='png')
+        pyplot_brain(reconstructed.cpu().squeeze().numpy(), args=args, savename="reconstructed_sample", figpath=f"{args.validation.output_folder}/{args.jobid}/autoencoder", save_type='png')
+
+    if ae_save_path is not None:
+        os.makedirs(os.path.dirname(ae_save_path), exist_ok=True)
+        torch.save(autoencoder.state_dict(), ae_save_path)
+        print(f"Saved autoencoder to {ae_save_path}")
+
+    args.model.ae_latent_dim = latent_dim
+    return autoencoder
 
 
 def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffusion_process, args, orig_len=None):
@@ -74,7 +153,7 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
     
     return loss
 
-def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_function, diffusion_process, args):
+def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_function, diffusion_process, args, autoencoder=None):
     model.train().to(DEVICE)
     # TODO: check why data type changes from float64 to DoubleTensor somewhere here...    
     data, label = next(train_dataloader)
@@ -85,11 +164,28 @@ def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_func
         if data.ndim == 2:
             data = data[:, None, :]
         label = label.float()
+        if autoencoder is not None:
+            with torch.no_grad():
+                z = autoencoder.encoder(data.squeeze(1))
+            data = z[:, None, :]
         orig_len = data.shape[-1]
         factor = getattr(model, "downsample_factor", 1)
-        data, pad_len = pad_1d_to_factor(data, factor)
-        if pad_len > 0 and step == 0:
-            print(f"Padded input length from {orig_len} to {orig_len + pad_len} (factor {factor})")
+        if autoencoder is not None:
+            if orig_len % factor != 0:
+                data, pad_len = pad_1d_to_factor(data, factor)
+                if step == 0:
+                    print(
+                        f"Warning: latent length {orig_len} not divisible by {factor}; "
+                        f"padding to {orig_len + pad_len}"
+                    )
+            else:
+                pad_len = 0
+                if step == 0:
+                    print(f"Latent length {orig_len} divisible by {factor}; skipping padding")
+        else:
+            data, pad_len = pad_1d_to_factor(data, factor)
+            if pad_len > 0 and step == 0:
+                print(f"Padded input length from {orig_len} to {orig_len + pad_len} (factor {factor})")
     else:
         orig_len = None
 
@@ -120,31 +216,56 @@ def train(args):
     print("Training started...")
     print(f"Using the model type: {args.model.name}")
 
-    if args.data.data_name == "ann-brain":
-        roi_indices_path = os.path.join(args.data.roi_defs_dir, "roi_indices", f"{args.data.roi}.npy")
-        if not os.path.isfile(roi_indices_path):
-            ensure_fmri_roi_exists(args)
-        if os.path.isfile(roi_indices_path):
-            roi_indices = np.load(roi_indices_path, allow_pickle=True)
-            args.model.input_size = int(len(roi_indices))
-            print(f"Setting model.input_size to ROI voxel count: {args.model.input_size}")
-        else:
-            print("Warning: ROI indices file not found. Using config input_size instead.")
-
-    # get the dataloaders, it seems that we don't need to have a validation dataloader as we;re in the pure diffusion setting and not in bridges
+    ########################### AUTOENCODER TRAINING ###########################
+    # get dataloaders once for autoencoder training and conditioning shape
     train_dataloader, valid_dataloader = get_dataloader(args)
-    train_dataloader = itertools.cycle(train_dataloader)
-    valid_dataloader = itertools.cycle(valid_dataloader)
 
+    # for now a little brittle re-writing of args as every ROI and every ANN layer will have different dimensions 
+    # and we need to set them here before we create the model;
+    #  TODO: make it more elegant later
     if args.data.data_name == "ann-brain":
-        _, one_cond_signal = next(train_dataloader)
+        one_fmri_signal, one_cond_signal = next(iter(train_dataloader))
+        args.model.input_size = one_fmri_signal.shape[1]
         args.model.cross_attention_dim = one_cond_signal.shape[1]
 
+    autoencoder = train_linear_autoencoder(args, train_dataloader, DEVICE)   
+    if autoencoder is not None:
+        autoencoder.eval()  
+
+        # Log a sample reconstruction to wandb
+        with torch.no_grad():
+            sample_data, _ = next(iter(train_dataloader))
+            sample_data = sample_data[0].float().to(DEVICE) # take the first element of the batch
+            if sample_data.ndim == 3:
+                sample_data = sample_data.squeeze(1)
+            
+            latent = autoencoder.encoder(sample_data)
+            reconstructed = autoencoder.decoder(latent)
+            
+            sample_data = sample_data.cpu().squeeze().numpy()
+            reconstructed = reconstructed.cpu().squeeze().numpy()
+
+            #pyplot_brain(sample_data, args=args, savename="original_sample", figpath=f"{args.validation.output_folder}/{args.jobid}/autoencoder", save_type='png')
+            #pyplot_brain(reconstructed, args=args, savename="reconstructed_sample", figpath=f"{args.validation.output_folder}/{args.jobid}/autoencoder", save_type='png')
+            r2_scores_sample_recounstructed = pearsonr(sample_data, reconstructed)[0]
+            wandb.log({"autoencoder/r2_score": r2_scores_sample_recounstructed}, step=0)
+            print(f"Autoencoder sample reconstruction r2 score: {r2_scores_sample_recounstructed:.4f}", flush=True)
+
+        args.model.input_size_original = args.model.input_size
+        args.model.input_size = args.model.ae_latent_dim
+        print(f"Autoencoder enabled: input_size set to latent dim {args.model.input_size}")
+    ####################################################################################################
+    
     # TODO: get the model if exists for continual training; probably will need to specify a path in the config file
     model = set_model(args)
     optimizer = set_optimiser(args, model)
     loss_function = set_loss_function(args)
     lr_scheduler = set_learning_rate_scheduler(optimizer, args)
+
+    # re-create dataloaders for diffusion training
+    # train_dataloader, valid_dataloader = get_dataloader(args)
+    train_dataloader = itertools.cycle(train_dataloader)
+    valid_dataloader = itertools.cycle(valid_dataloader)
 
     print(f"We're getting diffusion type {args.diffusion.diffusion_type}", flush=True)
     diffusion_process = diffusivity.get_diffusion(args, device=DEVICE)
@@ -156,7 +277,7 @@ def train(args):
 
     for step in range(args.train.steps):
         print(f"Step {step+1}/{args.train.steps} started.", flush=True)
-        train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_function, diffusion_process, args)
+        train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_function, diffusion_process, args, autoencoder=autoencoder)
         
         if step % args.validation.eval_freq == 0:
             print(f"Validation at step {step+1}", flush=True)
@@ -175,11 +296,21 @@ def train(args):
                     args,
                     device=DEVICE,
                     cond=cond,
-                ).squeeze(1)  # remove channel dim
+                )
+
+                if autoencoder is not None:
+                    with torch.no_grad():
+                        z = generated_samples.squeeze(1)
+                        generated_samples = autoencoder.decoder(z)
+                else:
+                    generated_samples = generated_samples.squeeze(1)  # remove channel dim
                 
                 # to store r2 scores across images for each voxel
                 r2_scores_across_batch_images = np.empty((generated_samples.shape[1],))
                 r2_scores_across_voxels = np.empty((generated_samples.shape[0],))
+
+                print("True fmri shape:", true_fmri.shape, flush=True)
+                print("Generated samples shape:", generated_samples.shape, flush=True)
 
                 print("Calculating r2 scores across batch images...", flush=True)
                 for voxel_idx in range(generated_samples.shape[1]):
@@ -195,12 +326,12 @@ def train(args):
                     assert len(true_fmri_by_voxel) == len(generated_sample)
                     r2_scores_across_voxels[image_idx] = pearsonr(true_fmri_by_voxel, generated_sample)[0]
                 
-                visualise_and_save_results(generated_samples, valid_dataloader, step, args, r2_scores_across_batch_images=r2_scores_across_batch_images, r2_scores_across_voxels=r2_scores_across_voxels)
+                visualise_and_save_results(generated_samples, step, args, r2_scores_across_batch_images=r2_scores_across_batch_images, r2_scores_across_voxels=r2_scores_across_voxels)
 
             else:
                 generated_samples = diffusivity.generate_samples(args.validation.batch_size, model, diffusion_process, args, device=DEVICE)
                 # TODO: add other image statistics later 
-                visualise_and_save_results(generated_samples, valid_dataloader, step, args)
+                visualise_and_save_results(generated_samples, step, args)
 
         # save the models throughout the training
         if step % args.model.save_freq == 0 and step > 0:
@@ -220,6 +351,7 @@ def train(args):
     print("Training completed.", flush=True)
 
 def main():
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
     args = parse_args_and_setup_wandb()
     train(args)    
 
