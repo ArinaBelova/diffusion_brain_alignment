@@ -284,7 +284,7 @@ def train(args):
             # this one is a spcial case since we don't have a fixel label here like in MNIST case, 
             # rather continuous vectors that we should sample from the validation dataloader
             # TODO: move this correlation calculation to a separate function!
-            if args.model.name == "gfdm-unet-1d-cond" and args.data.data_name == "ann-brain":
+            if args.model.name in ["gfdm-unet-1d-cond", "dit"] and args.data.data_name == "ann-brain":
                 true_fmri, cond = next(valid_dataloader)
                 #cond = cond[:args.validation.batch_size].float().to(DEVICE)
                 cond = cond.float().to(DEVICE)

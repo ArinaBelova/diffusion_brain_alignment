@@ -159,23 +159,73 @@ class FinalLayer(nn.Module):
         x = self.linear(x)
         return x
 
+def get_1d_sincos_pos_embed(embed_dim, num_patches):
+    """
+    Generate 1D sinusoidal positional embeddings.
+    embed_dim: output dimension for each position
+    num_patches: number of patches (sequence length)
+    return: pos_embed: [num_patches, embed_dim]
+    """
+    pos = np.arange(num_patches, dtype=np.float32)
+    return get_1d_sincos_pos_embed_from_grid(embed_dim, pos)
+
+
+class PatchEmbed1D(nn.Module):
+    """
+    1D Patch Embedding using Conv1d.
+    """
+    def __init__(self, input_size, patch_size, in_channels, embed_dim):
+        super().__init__()
+        self.input_size = input_size
+        self.patch_size = patch_size
+        self.num_patches = input_size // patch_size
+        self.proj = nn.Conv1d(in_channels, embed_dim, kernel_size=patch_size, stride=patch_size)
+
+    def forward(self, x):
+        # x: (N, C, L) where L is input_size
+        x = self.proj(x)  # (N, embed_dim, num_patches)
+        x = x.transpose(1, 2)  # (N, num_patches, embed_dim)
+        return x
+
+
+class FinalLayer1D(nn.Module):
+    """
+    The final layer of DiT for 1D data.
+    """
+    def __init__(self, hidden_size, patch_size, out_channels):
+        super().__init__()
+        self.patch_size = patch_size
+        self.out_channels = out_channels
+        self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.linear = nn.Linear(hidden_size, patch_size * out_channels, bias=True)
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(hidden_size, 2 * hidden_size, bias=True)
+        )
+
+    def forward(self, x, c):
+        shift, scale = self.adaLN_modulation(c).chunk(2, dim=1)
+        x = modulate(self.norm_final(x), shift, scale)
+        x = self.linear(x)
+        return x
+
 
 class DiT(nn.Module):
     """
-    Diffusion model with a Transformer backbone.
+    Diffusion model with a Transformer backbone for 1D data.
     """
     def __init__(
         self,
         input_size=32,
         patch_size=2,
-        in_channels=4,
+        in_channels=1,
         hidden_size=1152,
         depth=28,
         num_heads=16,
         mlp_ratio=4.0,
         class_dropout_prob=0.1,
         num_classes=1000,
-        learn_sigma=False, # was true
+        learn_sigma=False,
         label_dim=None,
     ):
         super().__init__()
@@ -184,26 +234,29 @@ class DiT(nn.Module):
         self.out_channels = in_channels * 2 if learn_sigma else in_channels
         self.patch_size = patch_size
         self.num_heads = num_heads
+        self.input_size = input_size
 
-        self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
+        # Use 1D patch embedding with Conv1d
+        self.x_embedder = PatchEmbed1D(input_size, patch_size, in_channels, hidden_size)
+        self.num_patches = self.x_embedder.num_patches
+
         self.t_embedder = TimestepEmbedder(hidden_size)
         self.num_classes = num_classes
         if self.num_classes is not None:
             self.y_embedder = LabelEmbedder(self.num_classes, hidden_size, class_dropout_prob)
         else:
-            self.y_embedder = ContinuousLabelEmbedder(label_dim=label_dim, hidden_size=hidden_size) # for continuous labels, we can just use an MLP to embed them into the same space as timestep embeddings 
-        num_patches = self.x_embedder.num_patches
-        # Will use fixed sin-cos embedding:
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches, hidden_size), requires_grad=False)
+            self.y_embedder = ContinuousLabelEmbedder(label_dim=label_dim, hidden_size=hidden_size)
+
+        # 1D positional embedding
+        self.pos_embed = nn.Parameter(torch.zeros(1, self.num_patches, hidden_size), requires_grad=False)
 
         self.blocks = nn.ModuleList([
             DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
         ])
-        self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
+        self.final_layer = FinalLayer1D(hidden_size, patch_size, self.out_channels)
         self.initialize_weights()
 
     def initialize_weights(self):
-        # Initialize transformer layers:
         def _basic_init(module):
             if isinstance(module, nn.Linear):
                 torch.nn.init.xavier_uniform_(module.weight)
@@ -211,86 +264,215 @@ class DiT(nn.Module):
                     nn.init.constant_(module.bias, 0)
         self.apply(_basic_init)
 
-        # Initialize (and freeze) pos_embed by sin-cos embedding:
-        pos_embed = get_2d_sincos_pos_embed(self.pos_embed.shape[-1], int(self.x_embedder.num_patches ** 0.5))
+        # Initialize 1D pos_embed
+        pos_embed = get_1d_sincos_pos_embed(self.pos_embed.shape[-1], self.num_patches)
         self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
 
-        # Initialize patch_embed like nn.Linear (instead of nn.Conv2d):
+        # Initialize Conv1d like nn.Linear
         w = self.x_embedder.proj.weight.data
         nn.init.xavier_uniform_(w.view([w.shape[0], -1]))
         nn.init.constant_(self.x_embedder.proj.bias, 0)
 
-        # Initialize label embedding table:
+        # Initialize label embedding
         if self.num_classes is not None:
             nn.init.normal_(self.y_embedder.embedding_table.weight, std=0.02)
         else:
             nn.init.normal_(self.y_embedder.embedding_mlp[0].weight, std=0.02)
             nn.init.normal_(self.y_embedder.embedding_mlp[2].weight, std=0.02)
 
-        # Initialize timestep embedding MLP:
+        # Initialize timestep embedding MLP
         nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
         nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
 
-        # Zero-out adaLN modulation layers in DiT blocks:
+        # Zero-out adaLN modulation layers
         for block in self.blocks:
             nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
             nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
 
-        # Zero-out output layers:
+        # Zero-out output layers
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
         nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
         nn.init.constant_(self.final_layer.linear.weight, 0)
         nn.init.constant_(self.final_layer.linear.bias, 0)
 
-    def unpatchify(self, x):
+    def unpatchify_1d(self, x):
         """
-        x: (N, T, patch_size**2 * C)
-        imgs: (N, H, W, C)
+        x: (N, num_patches, patch_size * out_channels)
+        output: (N, out_channels, input_size)
         """
         c = self.out_channels
-        p = self.x_embedder.patch_size[0]
-        h = w = int(x.shape[1] ** 0.5)
-        assert h * w == x.shape[1]
-
-        x = x.reshape(shape=(x.shape[0], h, w, p, p, c))
-        x = torch.einsum('nhwpqc->nchpwq', x)
-        imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
-        return imgs
+        p = self.patch_size
+        x = x.reshape(x.shape[0], self.num_patches, p, c)  # (N, num_patches, patch_size, C)
+        x = x.permute(0, 3, 1, 2)  # (N, C, num_patches, patch_size)
+        x = x.reshape(x.shape[0], c, self.num_patches * p)  # (N, C, input_size)
+        return x
 
     def forward(self, x, t, y):
         """
-        Forward pass of DiT.
-        x: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
+        Forward pass of DiT for 1D data.
+        x: (N, input_size) or (N, C, input_size) tensor
         t: (N,) tensor of diffusion timesteps
-        y: (N,) tensor of class labels
+        y: (N,) or (N, label_dim) tensor of labels
         """
-        x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
-        t = self.t_embedder(t)                   # (N, D)
-        y = self.y_embedder(y) #, self.training)    # (N, D)
-        c = t + y                                # (N, D)
+        # Handle input shape: (N, input_size) -> (N, 1, input_size)
+        if x.dim() == 2:
+            x = x.unsqueeze(1)  # (N, 1, input_size)
+        
+        x = self.x_embedder(x) + self.pos_embed  # (N, num_patches, hidden_size)
+        t = self.t_embedder(t)  # (N, hidden_size)
+        y = self.y_embedder(y)  # (N, hidden_size)
+        c = t + y  # (N, hidden_size)
+        
         for block in self.blocks:
-            x = block(x, c)                      # (N, T, D)
-        x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
-        x = self.unpatchify(x)                   # (N, out_channels, H, W)
+            x = block(x, c)  # (N, num_patches, hidden_size)
+        
+        x = self.final_layer(x, c)  # (N, num_patches, patch_size * out_channels)
+        x = self.unpatchify_1d(x)  # (N, out_channels, input_size)
+        
+        # Return (N, input_size) if in_channels == 1
+        if self.out_channels == 1:
+            x = x.squeeze(1)
         return x
 
-    def forward_with_cfg(self, x, t, y, cfg_scale):
-        """
-        Forward pass of DiT, but also batches the unconditional forward pass for classifier-free guidance.
-        """
-        # https://github.com/openai/glide-text2im/blob/main/notebooks/text2im.ipynb
-        half = x[: len(x) // 2]
-        combined = torch.cat([half, half], dim=0)
-        model_out = self.forward(combined, t, y)
-        # For exact reproducibility reasons, we apply classifier-free guidance on only
-        # three channels by default. The standard approach to cfg applies it to all channels.
-        # This can be done by uncommenting the following line and commenting-out the line following that.
-        # eps, rest = model_out[:, :self.in_channels], model_out[:, self.in_channels:]
-        eps, rest = model_out[:, :3], model_out[:, 3:]
-        cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
-        half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
-        eps = torch.cat([half_eps, half_eps], dim=0)
-        return torch.cat([eps, rest], dim=1)
+# class DiT(nn.Module):
+#     """
+#     Diffusion model with a Transformer backbone.
+#     """
+#     def __init__(
+#         self,
+#         input_size=32,
+#         patch_size=2,
+#         in_channels=4,
+#         hidden_size=1152,
+#         depth=28,
+#         num_heads=16,
+#         mlp_ratio=4.0,
+#         class_dropout_prob=0.1,
+#         num_classes=1000,
+#         learn_sigma=False, # was true
+#         label_dim=None,
+#     ):
+#         super().__init__()
+#         self.learn_sigma = learn_sigma
+#         self.in_channels = in_channels
+#         self.out_channels = in_channels * 2 if learn_sigma else in_channels
+#         self.patch_size = patch_size
+#         self.num_heads = num_heads
+#         self.input_size = input_size
+
+#         #self.x_embedder = PatchEmbed(input_size, patch_size, in_channels, hidden_size, bias=True)
+#         self.x_embedder = nn.Linear(input_size, hidden_size)  # Use Linear layer for 1D input
+
+#         self.t_embedder = TimestepEmbedder(hidden_size)
+#         self.num_classes = num_classes
+#         if self.num_classes is not None:
+#             self.y_embedder = LabelEmbedder(self.num_classes, hidden_size, class_dropout_prob)
+#         else:
+#             self.y_embedder = ContinuousLabelEmbedder(label_dim=label_dim, hidden_size=hidden_size) # for continuous labels, we can just use an MLP to embed them into the same space as timestep embeddings 
+#         #num_patches = self.x_embedder.num_patches
+#         # Will use fixed sin-cos embedding:
+#         self.pos_embed = nn.Parameter(torch.zeros(1, self.input_size, hidden_size), requires_grad=False)
+
+#         self.blocks = nn.ModuleList([
+#             DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
+#         ])
+#         self.final_layer = FinalLayer(hidden_size, patch_size, self.out_channels)
+#         self.initialize_weights()
+
+#     def initialize_weights(self):
+#         # Initialize transformer layers:
+#         def _basic_init(module):
+#             if isinstance(module, nn.Linear):
+#                 torch.nn.init.xavier_uniform_(module.weight)
+#                 if module.bias is not None:
+#                     nn.init.constant_(module.bias, 0)
+#         self.apply(_basic_init)
+
+#         # Initialize (and freeze) pos_embed by sin-cos embedding:
+#         pos_embed = get_2d_sincos_pos_embed(self.pos_embed.shape[-1], int(self.input_size ** 0.5))
+#         self.pos_embed.data.copy_(torch.from_numpy(pos_embed).float().unsqueeze(0))
+
+#         # Initialize patch_embed like nn.Linear (instead of nn.Conv2d):
+#         w = self.x_embedder.weight.data
+#         nn.init.xavier_uniform_(w)
+#         nn.init.constant_(self.x_embedder.bias, 0)
+
+#         # Initialize label embedding table:
+#         if self.num_classes is not None:
+#             nn.init.normal_(self.y_embedder.embedding_table.weight, std=0.02)
+#         else:
+#             nn.init.normal_(self.y_embedder.embedding_mlp[0].weight, std=0.02)
+#             nn.init.normal_(self.y_embedder.embedding_mlp[2].weight, std=0.02)
+
+#         # Initialize timestep embedding MLP:
+#         nn.init.normal_(self.t_embedder.mlp[0].weight, std=0.02)
+#         nn.init.normal_(self.t_embedder.mlp[2].weight, std=0.02)
+
+#         # Zero-out adaLN modulation layers in DiT blocks:
+#         for block in self.blocks:
+#             nn.init.constant_(block.adaLN_modulation[-1].weight, 0)
+#             nn.init.constant_(block.adaLN_modulation[-1].bias, 0)
+
+#         # Zero-out output layers:
+#         nn.init.constant_(self.final_layer.adaLN_modulation[-1].weight, 0)
+#         nn.init.constant_(self.final_layer.adaLN_modulation[-1].bias, 0)
+#         nn.init.constant_(self.final_layer.linear.weight, 0)
+#         nn.init.constant_(self.final_layer.linear.bias, 0)
+
+#     def unpatchify(self, x):
+#         """
+#         x: (N, T, patch_size**2 * C)
+#         imgs: (N, H, W, C)
+#         """
+#         c = self.out_channels
+#         p = self.x_embedder.patch_size[0]
+#         h = w = int(x.shape[1] ** 0.5)
+#         assert h * w == x.shape[1]
+
+#         x = x.reshape(shape=(x.shape[0], h, w, p, p, c))
+#         x = torch.einsum('nhwpqc->nchpwq', x)
+#         imgs = x.reshape(shape=(x.shape[0], c, h * p, h * p))
+#         return imgs
+
+#     def forward(self, x, t, y):
+#         """
+#         Forward pass of DiT.
+#         x: (N, C,) tensor of spatial inputs (images or latent representations of images)
+#         t: (N,) tensor of diffusion timesteps
+#         y: (N,) tensor of class labels
+#         """
+#         ####################
+#         # print("self.input_size, self.patch_size, self.in_channels", self.input_size, self.x_embedder.patch_size, self.in_channels)
+#         # x = x.view(x.shape[0], 1, 1, self.input_size) #x[..., None, None].contiguous() # (N, C) -> (N, C, 1, 1) to prepare for patch embedding
+#         ####################
+#         print("given shape of x in forward", x.shape)
+#         x = self.x_embedder(x) + self.pos_embed  # (N, T, D), where T = H * W / patch_size ** 2
+#         t = self.t_embedder(t)                   # (N, D)
+#         y = self.y_embedder(y) #, self.training)    # (N, D)
+#         c = t + y                                # (N, D)
+#         for block in self.blocks:
+#             x = block(x, c)                      # (N, T, D)
+#         x = self.final_layer(x, c)                # (N, T, patch_size ** 2 * out_channels)
+#         x = self.unpatchify(x)                   # (N, out_channels, H, W)
+#         return x
+
+#     def forward_with_cfg(self, x, t, y, cfg_scale):
+#         """
+#         Forward pass of DiT, but also batches the unconditional forward pass for classifier-free guidance.
+#         """
+#         # https://github.com/openai/glide-text2im/blob/main/notebooks/text2im.ipynb
+#         half = x[: len(x) // 2]
+#         combined = torch.cat([half, half], dim=0)
+#         model_out = self.forward(combined, t, y)
+#         # For exact reproducibility reasons, we apply classifier-free guidance on only
+#         # three channels by default. The standard approach to cfg applies it to all channels.
+#         # This can be done by uncommenting the following line and commenting-out the line following that.
+#         # eps, rest = model_out[:, :self.in_channels], model_out[:, self.in_channels:]
+#         eps, rest = model_out[:, :3], model_out[:, 3:]
+#         cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
+#         half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
+#         eps = torch.cat([half_eps, half_eps], dim=0)
+#         return torch.cat([eps, rest], dim=1)
 
 
 #################################################################################
