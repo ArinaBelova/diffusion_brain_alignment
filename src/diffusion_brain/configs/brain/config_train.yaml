@@ -7,8 +7,8 @@ diffusion:
   diffusion_type: vp
   T: 1.0 #1000.0 # 1.0
   eps: 1.e-3 # time epsilon for the reverse timegrid
-  beta_min: 0.01 #0.1 #1.e-4 #0.01 #1.e-3 #1.e-4 # 0.01
-  beta_max: 10.0 #20.0 #0.02 #10.0 #1.e-2 #0.02 # 10.0
+  beta_min: 0.1 #0.01 #0.1 #1.e-4 #0.01 #1.e-3 #1.e-4 # 0.01
+  beta_max: 20.0 #10.0 #20.0 #0.02 #10.0 #1.e-2 #0.02 # 10.0
 
   max_diffusivity: ~
 
@@ -38,7 +38,7 @@ data:
 
 # need to wire up the model arguments' with UNet class definition
 model:
-  name: dit #gfdm-unet-1d-cond #unet-diffusers #gfdm-unet #unet-diffusers # unet
+  name: gfdm-unet-1d-cond #dit #unet-diffusers #gfdm-unet #unet-diffusers # unet
   #input_size: 32
   num_classes: 10 # it needs to be removed later when refactoring diffusivity.py as in ann-brain case we have continuous conditioning vector and not class labels; 
   c_in: 1
@@ -77,7 +77,7 @@ optim:
 
 train:
   steps: 10000 #2000 # train steps
-  batch_size: 64
+  batch_size: 32 # 64 # train batch size, may need to decrease it for the larger models and increase for smaller ones
   dataset_size: 9485 # 10000 - 515 images as train
   num_workers: 4
 
@@ -96,3 +96,4 @@ validation:
   guidance_scale: 10.0 #0.8
   output_folder: '/outputs/ann-brain/'
   num_workers: 1
+  label_to_generate: 1 # it needs to be removed later when refactoring diffusivity.py as in ann-brain case we have continuous conditioning vector and not class labels;
