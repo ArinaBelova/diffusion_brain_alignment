@@ -12,6 +12,11 @@ import einops
 from collections.abc import Callable
 from typing import Tuple
 
+
+def _unwrap_model(model: nn.Module) -> nn.Module:
+    return model.module if hasattr(model, "module") else model
+
+
 def get_diffusion(
     args,
     device="cpu",
@@ -167,6 +172,7 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
         #     else:
         #         score = score_fn(x, t, y_target) / torch.sqrt(diffusion_process.var(t))
         # else:
+        # for mnist:
         if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
 
             #######################
@@ -183,13 +189,19 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
 
             score_uncond = score_fn(x, time_unet, encoder_hidden_states = encoder_hidden_states, class_labels=y_empty).sample
             score_cond = score_fn(x, time_unet, encoder_hidden_states = encoder_hidden_states, class_labels=y_target).sample
-        elif args.model.name == "gfdm-unet-1d-cond":
+        # for ann-brain case with continuous conditioning vector:
+        elif args.model.name == "gfdm-unet-1d-cond" or args.model.name == "dit":
+            #######################
+            time_unet = t * 999
+            #######################
+
             if cond is None:
                 cond = torch.zeros(x.shape[0], args.model.cross_attention_dim, device=x.device)
             cond_uncond = torch.zeros_like(cond).to(device)
-            score_uncond = score_fn(x, t, cond_uncond)
-            score_cond = score_fn(x, t, cond)
+            score_uncond = score_fn(x, time_unet, cond_uncond)
+            score_cond = score_fn(x, time_unet, cond)
         else:
+            print("shape of x and t are: ", x.shape, t.shape, flush=True)
             score_uncond = score_fn(x, t, y_empty)
             score_cond = score_fn(x, t, y_target)
         
@@ -230,24 +242,28 @@ def generate_samples(num_samples: int,
                      cond: torch.Tensor = None):
     """Function to generate samples from the learned diffusion model"""
     # initial samples from p_T
+    raw_model = _unwrap_model(model)
     if args.data.data_name == "toy":
         dim_x = [args.model.input_size]
     elif args.model.name == "gfdm-unet-1d-cond":
         orig_len = args.model.input_size
-        factor = getattr(model, "downsample_factor", 1)
+        factor = getattr(raw_model, "downsample_factor", 1)
         if factor > 1 and orig_len % factor != 0:
             pad_len = (factor - (orig_len % factor)) % factor
         else:
             pad_len = 0
         padded_len = orig_len + pad_len
         dim_x = (args.model.c_in, padded_len)
-        args.validation.label_to_generate = 1 # in reality we don't use it, it's just a stab
-    else:
+    elif args.model.name == "dit":
+        dim_x = [args.model.input_size]
+    else: 
         dim_x = (args.model.c_in, args.model.input_size, args.model.input_size)
 
     noise = torch.randn(size=(num_samples, *dim_x), device=device)
-    _, std = diffusion_process.brown_moments(torch.zeros(num_samples, *dim_x).to(device), diffusion_process.T)
+    mu, std = diffusion_process.brown_moments(torch.zeros(num_samples, *dim_x).to(device), diffusion_process.T)
 
+
+    # print("in generate_samples noise shape is {}".format(noise.shape), flush=True)
     # print("in generate_samples mu and std shapes:", mu.shape, std.shape, flush=True)
     
     x_T = std * noise # + mu
