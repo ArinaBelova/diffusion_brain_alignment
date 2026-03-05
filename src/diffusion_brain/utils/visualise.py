@@ -83,7 +83,8 @@ def pyplot_brain(fsavg_data, savename, figpath, args, save_type='png', max_cmap_
 
     #wandb.log({f"{savename}": wandb.Html(plotly.io.to_html(fig))})
     wandb.log(_attach_model_step({f"{savename}": wandb.Image(fig)}, step_num))
-     
+
+    plt.close(fig) 
     # os.makedirs(figpath, exist_ok=True) 
     # fig.suptitle(f'{savename} - max abs val: {np.nanmax(np.abs(fsavg_data)):.2f}')
     # plt.savefig(f'{figpath}/{savename}.{save_type}', dpi=600)

@@ -21,13 +21,14 @@ def _infer_wandb_step(model_name, model_dir=None):
         return int(match.group(1))
 
     if str(model_name).lower() == "final" and model_dir and os.path.isdir(model_dir):
-        step_nums = []
-        for fname in os.listdir(model_dir):
-            m = _STEP_TAG_RE.search(fname)
-            if m:
-                step_nums.append(int(m.group(1)))
-        if step_nums:
-            return max(step_nums)
+        return "final"
+        # step_nums = []
+        # for fname in os.listdir(model_dir):
+        #     m = _STEP_TAG_RE.search(fname)
+        #     if m:
+        #         step_nums.append(int(m.group(1)))
+        # if step_nums:
+        #     return max(step_nums)
 
     return None
 
@@ -47,12 +48,12 @@ def _infer_model_dims_from_dataloader(dataloader):
         fmri_data = getattr(dataset, "fmri_data", None)
         activations = getattr(dataset, "activations", None)
         if fmri_data is not None and activations is not None:
-            return fmri_data.shape[-1], activations.shape[-1]
+            return fmri_data.shape[1:], activations.shape[-1] # to cater for 2D cases
 
     batch = next(iter(dataloader))
     if isinstance(batch, (list, tuple)) and len(batch) >= 2:
         fmri_signal, cond_signal = batch[0], batch[1]
-        return fmri_signal.shape[-1], cond_signal.shape[-1]
+        return fmri_signal.shape[1:], cond_signal.shape[-1]
 
     raise ValueError("Expected dataloader to yield (fmri_signal, cond) pairs.")
 
@@ -100,7 +101,7 @@ def generate_sample_loop(args):
     print("In generation we use the data from subject: ", args.data.subj)
     _, gen_dataloader = get_dataloader(args)
     input_size, cross_attention_dim = _infer_model_dims_from_dataloader(gen_dataloader)
-    args.model.input_size = int(input_size)
+    args.model.input_size = tuple(input_size) # was int(input_size)
     args.model.cross_attention_dim = int(cross_attention_dim)
 
     args.model.input_folder = args.model.input_folder + "-" + str(args.model.run_id) 

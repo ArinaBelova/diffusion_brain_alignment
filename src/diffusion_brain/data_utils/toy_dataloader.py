@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 from torch.utils.data import Dataset
+from torch.utils.data.distributed import DistributedSampler
 
 def get_toy_dataloader(args):
     dataset = EightGaussianConditional(
@@ -10,7 +11,22 @@ def get_toy_dataloader(args):
         label_type=args.train.label_type,  # 'index' or 'coordinates'
         radius=args.data.radius,
     )
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=args.train.batch_size, shuffle=True)
+    distributed = getattr(args, "distributed", None)
+    sampler = None
+    if distributed is not None and getattr(distributed, "is_distributed", False):
+        sampler = DistributedSampler(
+            dataset,
+            num_replicas=distributed.world_size,
+            rank=distributed.rank,
+            shuffle=True,
+            drop_last=False,
+        )
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=args.train.batch_size,
+        shuffle=sampler is None,
+        sampler=sampler,
+    )
     return dataloader, None
 
 class ToyDataset(Dataset):

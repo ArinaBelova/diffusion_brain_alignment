@@ -246,7 +246,7 @@ def generate_samples(num_samples: int,
     if args.data.data_name == "toy":
         dim_x = [args.model.input_size]
     elif args.model.name == "gfdm-unet-1d-cond":
-        orig_len = args.model.input_size
+        orig_len = args.model.input_size[0]
         factor = getattr(raw_model, "downsample_factor", 1)
         if factor > 1 and orig_len % factor != 0:
             pad_len = (factor - (orig_len % factor)) % factor
@@ -256,8 +256,10 @@ def generate_samples(num_samples: int,
         dim_x = (args.model.c_in, padded_len)
     elif args.model.name == "dit":
         dim_x = [args.model.input_size]
-    else: 
+    elif args.data.data_name == "mnist": 
         dim_x = (args.model.c_in, args.model.input_size, args.model.input_size)
+    else:
+        dim_x = args.model.input_size # for rectangular shapes
 
     noise = torch.randn(size=(num_samples, *dim_x), device=device)
     mu, std = diffusion_process.brown_moments(torch.zeros(num_samples, *dim_x).to(device), diffusion_process.T)

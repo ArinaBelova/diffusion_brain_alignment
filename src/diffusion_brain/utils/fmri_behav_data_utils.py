@@ -168,7 +168,9 @@ def get_roi_mask(args):
 def preprocess_fmri_roi(args):
     """
     Extract ROI voxels from full fMRI data and save.
-    Returns tensor [n_samples, n_roi_voxels]
+    Handles both 1D and 2D (transformed) formats based on args.data.is_2d.
+    For 2D mode: converts all samples to 2D images and saves them pre-processed.
+    Returns tensor [n_samples, n_roi_voxels] for 1D or 2D grid representation.
     """
     print(f"Preprocessing fMRI ROI: {args.data.roi}", flush=True)
     
@@ -179,22 +181,61 @@ def preprocess_fmri_roi(args):
     # 2. Load full betas (memory-mapped)
     fmri_path = os.path.join(args.data.fmri_data_root, f"{args.data.subj}_{args.data.fmri_data_name}")
     full_betas = np.load(fmri_path, mmap_mode='r')  # [n_voxels, n_samples]
+    n_total_voxels = full_betas.shape[0]
     
     # 3. Extract ROI voxels
     roi_betas = full_betas[roi_indices, :].T  # [n_samples, n_roi_voxels]
     roi_betas = torch.from_numpy(roi_betas.copy()).float()
     
-    # 4. Save
-    save_path = os.path.join(args.data.roi_defs_dir, f"roi_preselected", f"{args.data.roi_file}", f"{args.data.subj}_{args.data.roi}.pt")
-    if not os.path.exists(os.path.dirname(save_path)):
-        os.makedirs(os.path.dirname(save_path))
-    torch.save(roi_betas, save_path)
+    # 4. Determine save path based on 1D vs 2D and apply transformations if needed
+    if args.data.is_2d:
+        # Get 2D grid mapping
+        roi_info = precompute_roi_indices(roi_indices, args)
+        
+        # Convert all 1D signals to 2D images
+        n_samples = roi_betas.shape[0]
+        roi_2d_images = np.full((n_samples, roi_info['H'], roi_info['W']),0, dtype=np.float32)
+        
+        print(f"Converting {n_samples} samples to 2D images (H={roi_info['H']}, W={roi_info['W']})...", flush=True)
+        for i in range(n_samples):
+            # Create full signal with NaN, then fill ROI voxels
+            signal_1d = np.full(n_total_voxels,0, dtype=np.float32)
+            signal_1d[roi_indices] = roi_betas[i].numpy()
+            # Convert to 2D
+            roi_2d_images[i] = signal_to_2d(signal_1d, roi_info, combined=True) 
+
+        roi_2d_images = torch.from_numpy(roi_2d_images[:, None, :, :]).float()
+        
+        # Save 2D images to separate directory for efficient loading during training
+        save_dir = os.path.join(
+            args.data.roi_defs_dir, f"roi_preselected_extended_2d_images",
+            f"{args.data.roi_file}"
+        )
+        
+    else:
+        save_dir = os.path.join(
+            args.data.roi_defs_dir, f"roi_preselected", 
+            f"{args.data.roi_file}"
+        )
+    
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+    
+    save_path = os.path.join(save_dir, f"{args.data.subj}_{args.data.roi}.pt")
+
+    if args.data.is_2d:
+        torch.save(roi_2d_images, save_path)
+        print(f"Saved 2D ROI images to {save_path}, shape: {roi_2d_images.shape}", flush=True)
+    else:       
+        torch.save(roi_betas, save_path)
+        print(f"Saved 1D ROI betas to {save_path}, shape: {roi_betas.shape}", flush=True)
+
     
     # Also save ROI indices for reference
-    roi_indices_path = os.path.join(args.data.roi_defs_dir, f"roi_indices",  f"{args.data.roi_file}", f"{args.data.roi}.npy")
-    if not os.path.exists(os.path.dirname(roi_indices_path)):
-        os.makedirs(os.path.dirname(roi_indices_path))
-
+    roi_indices_dir = os.path.join(args.data.roi_defs_dir, f"roi_indices",  f"{args.data.roi_file}")
+    if not os.path.exists(roi_indices_dir):
+        os.makedirs(roi_indices_dir)
+    roi_indices_path = os.path.join(roi_indices_dir, f"{args.data.roi}.npy")
     np.save(roi_indices_path, roi_indices)
     
     print(f"Saved ROI betas to {save_path}, shape: {roi_betas.shape}")
@@ -203,12 +244,25 @@ def preprocess_fmri_roi(args):
 
 
 def ensure_fmri_roi_exists(args):
-    """Thread-safe check and preprocessing for fMRI ROI data."""
-    save_path = os.path.join(
-        args.data.roi_defs_dir, f"roi_preselected", 
-        f"{args.data.roi_file}",
-        f"{args.data.subj}_{args.data.roi}.pt"
-    )
+    """Thread-safe check and preprocessing for fMRI ROI data.
+    
+    Determines the appropriate save path based on 1D vs 2D configuration,
+    then delegates to preprocess_fmri_roi() which handles both formats.
+    """
+    # Determine save path based on 1D vs 2D
+    if args.data.is_2d:
+        save_path = os.path.join(
+            args.data.roi_defs_dir, f"roi_preselected_extended_2d_images", 
+            f"{args.data.roi_file}",
+            f"{args.data.subj}_{args.data.roi}.pt"
+        )
+    else:
+        save_path = os.path.join(
+            args.data.roi_defs_dir, f"roi_preselected", 
+            f"{args.data.roi_file}",
+            f"{args.data.subj}_{args.data.roi}.pt"
+        )
+        
     lock_path = save_path + ".lock"
     
     with FileLock(lock_path):
@@ -234,3 +288,162 @@ def compute_rdm(data, args, regime="train", method='correlation'):
     )
     rdm = rsatoolbox.rdm.calc_rdm(dataset, method=method)
     return rdm
+
+########################## 1D -> 2D utils ##########################
+import numpy as np
+import cortex
+from pathlib import Path
+
+
+def compute_grid_no_collisions(xy_roi):
+    """Map ROI vertices to 2D grid without collisions."""
+    x, y = xy_roi[:, 0], xy_roi[:, 1]
+    n = len(xy_roi)
+
+    n_rows = int(np.ceil(np.sqrt(n)))
+
+    y_bins = np.round(
+        (y - y.min()) /
+        (y.max() - y.min() + 1e-8) * (n_rows - 1)
+    ).astype(int)
+
+    x_idx = np.zeros(n, dtype=int)
+    y_idx = y_bins.copy()
+
+    for row in range(n_rows):
+        mask = y_bins == row
+        if mask.sum() == 0:
+            continue
+        col_order = np.argsort(x[mask])
+        col_indices = np.empty_like(col_order)
+        col_indices[col_order] = np.arange(mask.sum())
+        x_idx[mask] = col_indices
+
+    H = y_idx.max() + 1
+    W = x_idx.max() + 1
+
+    positions = np.stack([y_idx, x_idx], axis=1)
+    n_unique = len(np.unique(positions, axis=0))
+    assert n_unique == n, f"Collisions detected: {n - n_unique}"
+
+    return x_idx, y_idx, H, W
+
+
+def precompute_roi_indices(roi_verts, args):
+    """
+    Precompute 2D grid indices for ROI vertices on fsaverage surface.
+    Handles left and right hemispheres independently, then combines them.
+    """
+    print("Precomuting the extended 2D image indices for the ROI vertices...", flush=True)
+    pts_left, _ = cortex.db.get_surf('fsaverage', 'flat', hemisphere='left')
+    pts_right, _ = cortex.db.get_surf('fsaverage', 'flat', hemisphere='right')
+
+    xy_left = pts_left[:, :2]
+    xy_right = pts_right[:, :2]
+    n_left = len(pts_left)
+
+    roi_verts = roi_verts.astype(int)
+    lh_mask = roi_verts < n_left
+    rh_mask = ~lh_mask
+
+    lh_verts_global = roi_verts[lh_mask]
+    rh_verts_global = roi_verts[rh_mask]
+    rh_verts_local = rh_verts_global - n_left
+
+    result = {}
+    for hemi, xy, verts_global, verts_local in [
+        ('lh', xy_left, lh_verts_global, lh_verts_global),
+        ('rh', xy_right, rh_verts_global, rh_verts_local),
+    ]:
+        if len(verts_global) == 0:
+            result[hemi] = None
+            continue
+
+        xy_roi = xy[verts_local]
+        x_idx, y_idx, H, W = compute_grid_no_collisions(xy_roi)
+
+        result[hemi] = {
+            'verts_global': verts_global,
+            'verts_local': verts_local,
+            'x_idx': x_idx,
+            'y_idx': y_idx,
+            'H': H,
+            'W': W,
+        }
+
+    lh_info = result['lh']
+    rh_info = result['rh']
+
+    gap = 5
+    combined_H = max(lh_info['H'], rh_info['H'])
+    combined_W = lh_info['W'] + gap + rh_info['W']
+    rh_x_idx_offset = rh_info['x_idx'] + lh_info['W'] + gap
+
+    output = {
+        'lh': {
+            'verts_global': lh_info['verts_global'],
+            'verts_local': lh_info['verts_local'],
+            'x_idx': lh_info['x_idx'],
+            'y_idx': lh_info['y_idx'],
+            'H': lh_info['H'],
+            'W': lh_info['W'],
+        },
+        'rh': {
+            'verts_global': rh_info['verts_global'],
+            'verts_local': rh_info['verts_local'],
+            'x_idx': rh_x_idx_offset,
+            'y_idx': rh_info['y_idx'],
+            'H': rh_info['H'],
+            'W': rh_info['W'],
+        },
+        'H': combined_H,
+        'W': combined_W,
+        'rh_x_idx_local': rh_info['x_idx'],
+        'rh_y_idx_local': rh_info['y_idx'],
+    }
+    
+    save_path = os.path.join(
+        args.data.roi_defs_dir, f"roi_preselected_extended_2d_images_info", 
+        f"{args.data.roi_file}",
+        f"{args.data.subj}_{args.data.roi}.pt"
+    )
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+
+    torch.save(output, save_path)
+
+    return output
+
+
+def signal_to_2d(signal_1d, roi_info, combined=True):
+    """Convert 1D fsaverage signal to 2D matrix."""
+    lh = roi_info['lh']
+    rh = roi_info['rh']
+
+    if combined:
+        matrix = np.full((roi_info['H'], roi_info['W']),0, dtype=np.float32)
+        matrix[lh['y_idx'], lh['x_idx']] = signal_1d[lh['verts_global']]
+        matrix[rh['y_idx'], rh['x_idx']] = signal_1d[rh['verts_global']]
+        return matrix
+    else:
+        lh_matrix = np.full((lh['H'], lh['W']),0, dtype=np.float32)
+        rh_matrix = np.full((rh['H'], rh['W']),0, dtype=np.float32)
+        lh_matrix[lh['y_idx'], lh['x_idx']] = signal_1d[lh['verts_global']]
+        rh_matrix[roi_info['rh_y_idx_local'], roi_info['rh_x_idx_local']] = signal_1d[rh['verts_global']]
+        return lh_matrix, rh_matrix
+
+
+def matrix_to_signal_1d(matrix_or_tuple, n_total, roi_info, combined=True):
+    """Convert 2D matrix back to 1D fsaverage signal."""
+    signal = np.full(n_total, 0, dtype=np.float32)
+    lh = roi_info['lh']
+    rh = roi_info['rh']
+
+    if combined:
+        matrix = matrix_or_tuple
+        signal[lh['verts_global']] = matrix[lh['y_idx'], lh['x_idx']]
+        signal[rh['verts_global']] = matrix[rh['y_idx'], rh['x_idx']]
+    else:
+        lh_matrix, rh_matrix = matrix_or_tuple
+        signal[lh['verts_global']] = lh_matrix[lh['y_idx'], lh['x_idx']]
+        signal[rh['verts_global']] = rh_matrix[roi_info['rh_y_idx_local'], roi_info['rh_x_idx_local']]
+    return signal

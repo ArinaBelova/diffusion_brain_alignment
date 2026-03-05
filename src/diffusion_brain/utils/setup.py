@@ -1,4 +1,5 @@
 import argparse
+import os
 import yaml
 from types import SimpleNamespace
 import wandb 
@@ -75,7 +76,7 @@ def parse_cmd_args():
     return parser.parse_args()
 
 
-def parse_args_and_setup_wandb():
+def parse_args_and_setup_wandb(init_wandb=True):
     # Parse command line arguments
     cmd_args = parse_cmd_args()
     
@@ -100,18 +101,21 @@ def parse_args_and_setup_wandb():
     print("Job id:", config.jobid)
     
     if config.jobid is None:
-        run_id = wandb.util.generate_id() 
+        # torchrun populates TORCHELASTIC_RUN_ID; it is shared across ranks.
+        run_id = os.environ.get("TORCHELASTIC_RUN_ID")
+        if not run_id:
+            run_id = wandb.util.generate_id()
         config.jobid = run_id
     else:
         run_id = config.jobid
 
-    # Setup wandb
-    wandb.init(
-        id=run_id,
-        name=run_id,
-        project=config.wandb.project_name,
-        config=namespace_to_dict(config),
-    )
+    if init_wandb:
+        wandb.init(
+            id=run_id,
+            name=run_id,
+            project=config.wandb.project_name,
+            config=namespace_to_dict(config),
+        )
     
     return config
 

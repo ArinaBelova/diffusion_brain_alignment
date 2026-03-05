@@ -2,11 +2,27 @@ import torch
 import h5py
 from torch.utils.data import Dataset
 from torchvision.models.feature_extraction import create_feature_extractor
+from torchvision import models
+
 import os
 import numpy as np
 from PIL import Image
 from filelock import FileLock
 from pathlib import Path
+
+def load_model(model_name: str, weights_name: str = "DEFAULT"):
+    # Get model constructor and weights class
+    model_fn = getattr(models, model_name)
+    weights_enum = models.get_model_weights(model_name)
+    
+    # Get specific weights
+    weights = getattr(weights_enum, weights_name)
+    
+    # Load model
+    model = model_fn(weights=weights)
+    model.eval()
+    
+    return model, weights.transforms()
 
 def precompute_activations(indices_to_extract, args, data_name="imgBrick"):
     """
@@ -17,12 +33,16 @@ def precompute_activations(indices_to_extract, args, data_name="imgBrick"):
     
     # Load model
     weights_name = args.data.ann_model_weights
+    model_name = args.data.ann_model
     print(f"In precompute activations the requested weights are {weights_name}")
-    weights = torch.hub.load('pytorch/vision', 'get_weight', name=weights_name)
-    transforms = weights.transforms()
-    print(f"Transforms of the model {args.data.ann_model} are {transforms}")
-    model = torch.hub.load('pytorch/vision', args.data.ann_model, weights=weights)
+    # weights = torch.hub.load('pytorch/vision', 'get_weight', name=weights_name)
+    # transforms = weights.transforms()
+    # model = torch.hub.load('pytorch/vision', args.data.ann_model, weights=weights)
     
+    model, transforms = load_model(model_name, weights_name)
+    print(f"Transforms of the model {model_name} are {transforms}")
+    is_vit_model = model_name.startswith("vit_")
+
     extractor = create_feature_extractor(
         model,
         return_nodes={args.data.layer_name: 'feat'}
@@ -41,7 +61,11 @@ def precompute_activations(indices_to_extract, args, data_name="imgBrick"):
             for nsd_idx in indices:
                 img = Image.fromarray(dataset[nsd_idx - 1]) # 1-indexed to 0-indexed
                 img_tensor = transforms(img).unsqueeze(0).to(device)
-                feat = extractor(img_tensor)['feat'].squeeze().cpu()
+                feat = extractor(img_tensor)['feat']
+                if is_vit_model and feat.ndim == 3:
+                    feat = feat[:, 0, :].squeeze(0).cpu()
+                else:
+                    feat = feat.squeeze().cpu()
                 activations.append(feat)
     
     # Stack into tensor [n_samples, *feature_dims]
@@ -50,7 +74,7 @@ def precompute_activations(indices_to_extract, args, data_name="imgBrick"):
     # Save
     save_path = os.path.join(
         args.data.ann_activations_data_path, 
-        args.data.ann_model,
+        model_name,
         f"activations_weights_{weights_name}_layer_{args.data.layer_name}_{len(indices)}_samples.pt"
     )
     os.makedirs(os.path.dirname(save_path), exist_ok=True)

@@ -6,9 +6,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import datetime
 import random
-import itertools
 import os
 import torch.nn.functional as F
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from scipy.stats import pearsonr
 
 from diffusion_brain.utils.grad_updaters import set_loss_function, set_optimiser, set_learning_rate_scheduler 
@@ -18,7 +19,72 @@ from diffusion_brain.data_utils import get_dataloader
 import diffusion_brain.utils.diffusivity as diffusivity
 from diffusion_brain.utils.setup import parse_args_and_setup_wandb
 from diffusion_brain.utils.visualise import visualise_and_save_results, pyplot_brain
-from diffusion_brain.utils.fmri_behav_data_utils import ensure_fmri_roi_exists
+from diffusion_brain.utils.fmri_behav_data_utils import ensure_fmri_roi_exists, matrix_to_signal_1d
+
+
+def unwrap_model(model):
+    return model.module if hasattr(model, "module") else model
+
+
+def is_distributed():
+    return dist.is_available() and dist.is_initialized()
+
+
+def is_main_process(args):
+    if not hasattr(args, "distributed"):
+        return True
+    return args.distributed.rank == 0
+
+
+def barrier():
+    if is_distributed():
+        dist.barrier()
+
+
+def log_wandb(payload, step=None):
+    if wandb.run is None:
+        return
+    if step is None:
+        wandb.log(payload)
+    else:
+        wandb.log(payload, step=step)
+
+
+def setup_distributed():
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    rank = int(os.environ.get("RANK", "0"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    distributed = world_size > 1
+
+    if distributed and not is_distributed():
+        if torch.cuda.is_available():
+            torch.cuda.set_device(local_rank)
+            backend = "nccl"
+        else:
+            backend = "gloo"
+        dist.init_process_group(backend=backend, init_method="env://")
+
+    return SimpleNamespace(
+        is_distributed=distributed,
+        world_size=world_size,
+        rank=rank,
+        local_rank=local_rank,
+    )
+
+
+def cleanup_distributed():
+    if is_distributed():
+        dist.destroy_process_group()
+
+
+def infinite_loader(dataloader, sampler=None):
+    epoch = 0
+    while True:
+        if sampler is not None and hasattr(sampler, "set_epoch"):
+            sampler.set_epoch(epoch)
+        for batch in dataloader:
+            yield batch
+        epoch += 1
 
 def pad_1d_to_factor(x, factor):
     if factor <= 1:
@@ -77,7 +143,7 @@ def train_linear_autoencoder(args, train_dataloader, device):
 
         avg_loss = epoch_loss / max(1, num_batches)
         print(f"AE epoch {epoch + 1}/{ae_epochs} loss: {avg_loss:.6f}")
-        wandb.log({"autoencoder/loss": avg_loss, "autoencoder/epoch": epoch + 1})
+        log_wandb({"autoencoder/loss": avg_loss, "autoencoder/epoch": epoch + 1})
 
     autoencoder.eval()
     for p in autoencoder.parameters():
@@ -154,7 +220,7 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
     return loss
 
 def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_function, diffusion_process, args, autoencoder=None):
-    model.train().to(DEVICE)
+    model.train()
     # TODO: check why data type changes from float64 to DoubleTensor somewhere here...    
     data, label = next(train_dataloader)
     data = data.float().to(DEVICE)
@@ -169,7 +235,7 @@ def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_func
                 z = autoencoder.encoder(data.squeeze(1))
             data = z[:, None, :]
         orig_len = data.shape[-1]
-        factor = getattr(model, "downsample_factor", 1)
+        factor = getattr(unwrap_model(model), "downsample_factor", 1)
         if autoencoder is not None:
             if orig_len % factor != 0:
                 data, pad_len = pad_1d_to_factor(data, factor)
@@ -186,6 +252,12 @@ def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_func
             data, pad_len = pad_1d_to_factor(data, factor)
             if pad_len > 0 and step == 0:
                 print(f"Padded input length from {orig_len} to {orig_len + pad_len} (factor {factor})")
+    elif args.model.name == "unet-diffusers":
+        # For 2D images: ensure shape is [batch, channels, H, W]
+        # if args.data.is_2d and data.ndim == 3:
+        #     data = data[:, None, :, :]  # Add channel dimension
+        label = label.float()
+        orig_len = None
     else:
         orig_len = None
 
@@ -206,29 +278,49 @@ def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_func
     optimizer.step()
     lr_scheduler.step()
 
-    wandb.log({"train/loss": loss,
-                "train/lr": lr_scheduler.get_last_lr()[0]},
-                step=step)
+    log_wandb(
+        {
+            "train/loss": float(loss.item()),
+            "train/lr": lr_scheduler.get_last_lr()[0],
+        },
+        step=step,
+    )
     
 def train(args):
     #torch.set_default_dtype(torch.float64)
 
-    print("Training started...")
-    print(f"Using the model type: {args.model.name}")
+    if is_main_process(args):
+        print("Training started...")
+        print(f"Using the model type: {args.model.name}")
 
     ########################### AUTOENCODER TRAINING ###########################
     # get dataloaders once for autoencoder training and conditioning shape
     train_dataloader, valid_dataloader = get_dataloader(args)
+    train_sampler = getattr(train_dataloader, "sampler", None)
+    valid_sampler = getattr(valid_dataloader, "sampler", None) if valid_dataloader is not None else None
 
     # for now a little brittle re-writing of args as every ROI and every ANN layer will have different dimensions 
     # and we need to set them here before we create the model;
     #  TODO: make it more elegant later
     if args.data.data_name == "ann-brain":
         one_fmri_signal, one_cond_signal = next(iter(train_dataloader))
-        args.model.input_size = one_fmri_signal.shape[1]
+        args.model.input_size = tuple(one_fmri_signal.shape[1:])   
         args.model.cross_attention_dim = one_cond_signal.shape[1]
 
-    autoencoder = train_linear_autoencoder(args, train_dataloader, DEVICE)   
+    should_rank0_train_autoencoder = (
+        args.distributed.is_distributed
+        and getattr(args.model, "use_autoencoder", False)
+        and getattr(args.model, "ae_save_path", None) is not None
+    )
+    if should_rank0_train_autoencoder:
+        if is_main_process(args):
+            autoencoder = train_linear_autoencoder(args, train_dataloader, DEVICE)
+        barrier()
+        if not is_main_process(args):
+            autoencoder = train_linear_autoencoder(args, train_dataloader, DEVICE)
+    else:
+        autoencoder = train_linear_autoencoder(args, train_dataloader, DEVICE)
+
     if autoencoder is not None:
         autoencoder.eval()  
 
@@ -248,115 +340,172 @@ def train(args):
             #pyplot_brain(sample_data, args=args, savename="original_sample", figpath=f"{args.validation.output_folder}/{args.jobid}/autoencoder", save_type='png')
             #pyplot_brain(reconstructed, args=args, savename="reconstructed_sample", figpath=f"{args.validation.output_folder}/{args.jobid}/autoencoder", save_type='png')
             r2_scores_sample_recounstructed = pearsonr(sample_data, reconstructed)[0]
-            wandb.log({"autoencoder/r2_score": r2_scores_sample_recounstructed}, step=0)
+            log_wandb({"autoencoder/r2_score": r2_scores_sample_recounstructed}, step=0)
             print(f"Autoencoder sample reconstruction r2 score: {r2_scores_sample_recounstructed:.4f}", flush=True)
 
         args.model.input_size_original = args.model.input_size
         args.model.input_size = args.model.ae_latent_dim
         print(f"Autoencoder enabled: input_size set to latent dim {args.model.input_size}")
     ####################################################################################################
-    
+
+    barrier()
+
     # TODO: get the model if exists for continual training; probably will need to specify a path in the config file
-    model = set_model(args)
+    model = set_model(args).to(DEVICE)
+    if args.distributed.is_distributed:
+        if DEVICE.type == "cuda":
+            model = DDP(model, device_ids=[args.distributed.local_rank], output_device=args.distributed.local_rank)
+        else:
+            model = DDP(model)
+
     optimizer = set_optimiser(args, model)
     loss_function = set_loss_function(args)
     lr_scheduler = set_learning_rate_scheduler(optimizer, args)
 
-    # re-create dataloaders for diffusion training
-    # train_dataloader, valid_dataloader = get_dataloader(args)
-    train_dataloader = itertools.cycle(train_dataloader)
-    valid_dataloader = itertools.cycle(valid_dataloader)
+    train_iterator = infinite_loader(train_dataloader, sampler=train_sampler)
+    valid_iterator = None
+    if valid_dataloader is not None:
+        valid_iterator = infinite_loader(valid_dataloader, sampler=valid_sampler)
 
-    print(f"We're getting diffusion type {args.diffusion.diffusion_type}", flush=True)
+    if is_main_process(args):
+        print(f"We're getting diffusion type {args.diffusion.diffusion_type}", flush=True)
     diffusion_process = diffusivity.get_diffusion(args, device=DEVICE)
 
-    if args.diffusion.diffusion_type == "vp":
+    if args.diffusion.diffusion_type == "vp" and is_main_process(args):
         print(f"beta min is {diffusion_process.beta_min}, beta_max is {diffusion_process.beta_max}", flush=True)
-    elif args.diffusion.diffusion_type == "ve":
+    elif args.diffusion.diffusion_type == "ve" and is_main_process(args):
         print(f"sigma_min is {diffusion_process.sigma_min}, sigma_max is {diffusion_process.sigma_max}", flush=True)
 
     for step in range(args.train.steps):
-        print(f"Step {step+1}/{args.train.steps} started.", flush=True)
-        train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_function, diffusion_process, args, autoencoder=autoencoder)
+        if is_main_process(args):
+            print(f"Step {step+1}/{args.train.steps} started.", flush=True)
+
+        train_step(step, model, optimizer, lr_scheduler, train_iterator, loss_function, diffusion_process, args, autoencoder=autoencoder)
         
-        if step % args.validation.eval_freq == 0:
-            print(f"Validation at step {step+1}", flush=True)
+        if valid_iterator is not None and step % args.validation.eval_freq == 0:
+            if is_main_process(args):
+                print(f"Validation at step {step+1}", flush=True)
             # this one is a spcial case since we don't have a fixel label here like in MNIST case, 
             # rather continuous vectors that we should sample from the validation dataloader
             # TODO: move this correlation calculation to a separate function!
-            if args.model.name in ["gfdm-unet-1d-cond", "dit"] and args.data.data_name == "ann-brain":
-                true_fmri, cond = next(valid_dataloader)
-                #cond = cond[:args.validation.batch_size].float().to(DEVICE)
-                cond = cond.float().to(DEVICE)
-                print("Generating sample of batch_size:", args.validation.batch_size, flush=True)
-                generated_samples = diffusivity.generate_samples(
-                    args.validation.batch_size, #cond.shape[0],
-                    model,
-                    diffusion_process,
-                    args,
-                    device=DEVICE,
-                    cond=cond,
-                )
+            if is_main_process(args):
+                if args.model.name in ["unet-diffusers", "gfdm-unet-1d-cond", "dit"] and args.data.data_name == "ann-brain":
+                    true_fmri, cond = next(valid_iterator)
+                    cond = cond.float().to(DEVICE)
+                    print("Generating sample of batch_size:", args.validation.batch_size, flush=True)
+                    generated_samples = diffusivity.generate_samples(
+                        args.validation.batch_size, #cond.shape[0],
+                        model,
+                        diffusion_process,
+                        args,
+                        device=DEVICE,
+                        cond=cond,
+                    )
 
-                if autoencoder is not None:
-                    with torch.no_grad():
-                        z = generated_samples.squeeze(1)
-                        generated_samples = autoencoder.decoder(z)
+                    # TODO: re-write matrix_to_signal_1d so it returns only the ROI voxels instead of the whole brain and then we won't need to do this indexing here; also check if this works correctly with autoencoder case where we have padding and unpadding
+                    if args.data.is_2d and generated_samples.ndim == 4:
+                        generated_samples = generated_samples.squeeze(1).cpu().numpy()  # remove channel dim
+                        true_fmri = true_fmri.squeeze(1).cpu().numpy()
+
+                        info = torch.load(os.path.join(args.data.roi_defs_dir, "roi_preselected_extended_2d_images_info", args.data.roi_file, f"{args.data.subj}_{args.data.roi}.pt"))
+                        roi_indices = np.concatenate([info["lh"]["verts_global"], info["rh"]["verts_global"]], axis=0)
+                         # Convert to full brain signals first
+                        converted_samples = []
+                        converted_samples_fmri = []
+                        for i in range(generated_samples.shape[0]):
+                            full_brain_signal = matrix_to_signal_1d(generated_samples[i], 327684, info, combined=True)
+                            converted_samples.append(full_brain_signal)
+
+                            true_full_brain_signal = matrix_to_signal_1d(true_fmri[i], 327684, info, combined=True)
+                            converted_samples_fmri.append(true_full_brain_signal)
+
+                        # Stack and convert to tensor for autoencoder if needed
+                        generated_samples = np.stack(converted_samples)  # [batch, 327684]
+                        generated_samples = torch.from_numpy(generated_samples).float()  # convert back to tensor
+                        generated_samples = generated_samples[:, roi_indices]  # extract ROI
+
+                        converted_samples_fmri = np.stack(converted_samples_fmri)  # [batch, 327684]
+                        converted_samples_fmri = torch.from_numpy(converted_samples_fmri).float()  # convert back to tensor
+                        true_fmri = converted_samples_fmri[:, roi_indices]  # extract ROI
+
+                    if autoencoder is not None:
+                        with torch.no_grad():
+                            z = generated_samples.squeeze(1)
+                            generated_samples = autoencoder.decoder(z)
+                    else:
+                        generated_samples = generated_samples.squeeze(1)  # remove channel dim
+                    
+                    # to store r2 scores across images for each voxel
+                    r2_scores_across_batch_images = np.empty((generated_samples.shape[1],))
+                    r2_scores_across_voxels = np.empty((generated_samples.shape[0],))
+
+                    print("True fmri shape:", true_fmri.shape, flush=True)
+                    print("Generated samples shape:", generated_samples.shape, flush=True)
+
+                    # TODO: think how interoduce inter-voxels statistics as here we treat all the voxels independently and calculate correlation across images for each voxel separately, 
+                    # but maybe we can also look at the correlation across voxels not to fall back to the univariate methods approaches
+                    print("Calculating r2 scores across batch images...", flush=True)
+                    for voxel_idx in range(generated_samples.shape[1]):
+                        true_fmri_by_image = true_fmri[:,voxel_idx].numpy()
+                        generated_sample = generated_samples[:,voxel_idx].cpu().numpy()
+                        assert len(true_fmri_by_image) == len(generated_sample)
+                        r2_scores_across_batch_images[voxel_idx] = pearsonr(true_fmri_by_image, generated_sample)[0]
+
+                    print("Calculating r2 scores across voxels...", flush=True)
+                    for image_idx in range(generated_samples.shape[0]):
+                        true_fmri_by_voxel = true_fmri[image_idx,:].numpy()
+                        generated_sample = generated_samples[image_idx,:].cpu().numpy()
+                        assert len(true_fmri_by_voxel) == len(generated_sample)
+                        r2_scores_across_voxels[image_idx] = pearsonr(true_fmri_by_voxel, generated_sample)[0]
+                    
+                    visualise_and_save_results(generated_samples, step, args, r2_scores_across_batch_images=r2_scores_across_batch_images, r2_scores_across_voxels=r2_scores_across_voxels)
+
                 else:
-                    generated_samples = generated_samples.squeeze(1)  # remove channel dim
-                
-                # to store r2 scores across images for each voxel
-                r2_scores_across_batch_images = np.empty((generated_samples.shape[1],))
-                r2_scores_across_voxels = np.empty((generated_samples.shape[0],))
+                    generated_samples = diffusivity.generate_samples(args.validation.batch_size, model, diffusion_process, args, device=DEVICE)
+                    # TODO: add other image statistics later 
+                    visualise_and_save_results(generated_samples, step, args)
 
-                print("True fmri shape:", true_fmri.shape, flush=True)
-                print("Generated samples shape:", generated_samples.shape, flush=True)
-
-                print("Calculating r2 scores across batch images...", flush=True)
-                for voxel_idx in range(generated_samples.shape[1]):
-                    true_fmri_by_image = true_fmri[:,voxel_idx].numpy()
-                    generated_sample = generated_samples[:,voxel_idx].cpu().numpy()
-                    assert len(true_fmri_by_image) == len(generated_sample)
-                    r2_scores_across_batch_images[voxel_idx] = pearsonr(true_fmri_by_image, generated_sample)[0]
-
-                print("Calculating r2 scores across voxels...", flush=True)
-                for image_idx in range(generated_samples.shape[0]):
-                    true_fmri_by_voxel = true_fmri[image_idx,:].numpy()
-                    generated_sample = generated_samples[image_idx,:].cpu().numpy()
-                    assert len(true_fmri_by_voxel) == len(generated_sample)
-                    r2_scores_across_voxels[image_idx] = pearsonr(true_fmri_by_voxel, generated_sample)[0]
-                
-                visualise_and_save_results(generated_samples, step, args, r2_scores_across_batch_images=r2_scores_across_batch_images, r2_scores_across_voxels=r2_scores_across_voxels)
-
-            else:
-                generated_samples = diffusivity.generate_samples(args.validation.batch_size, model, diffusion_process, args, device=DEVICE)
-                # TODO: add other image statistics later 
-                visualise_and_save_results(generated_samples, step, args)
+            barrier()
 
         # save the models throughout the training
-        if step % args.model.save_freq == 0 and step > 0:
+        if is_main_process(args) and step % args.model.save_freq == 0 and step > 0:
             directory_to_save = f"{args.model.output_folder}/{args.jobid}"
             if not os.path.exists(directory_to_save):
                     os.makedirs(directory_to_save)
-            torch.save(model.state_dict(), f"{directory_to_save}/model_step_{step}.pth")        
+            torch.save(unwrap_model(model).state_dict(), f"{directory_to_save}/model_step_{step}.pth")
             print(f"Model saved at step {step}.", flush=True)    
             
     # save the model
-    directory_to_save = f"{args.model.output_folder}/{args.jobid}"
-    if not os.path.exists(directory_to_save):
-            os.makedirs(directory_to_save)
-    torch.save(model.state_dict(), f"{directory_to_save}/model_final.pth")     
-    print("Saved the final model.", flush=True)
+    if is_main_process(args):
+        directory_to_save = f"{args.model.output_folder}/{args.jobid}"
+        if not os.path.exists(directory_to_save):
+                os.makedirs(directory_to_save)
+        torch.save(unwrap_model(model).state_dict(), f"{directory_to_save}/model_final.pth") # args.train.steps instead of final ?
+        print("Saved the final model.", flush=True)
+        print("Training completed.", flush=True)
 
-    print("Training completed.", flush=True)
+    barrier()
 
 def main():
     os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-    args = parse_args_and_setup_wandb()
-    train(args)    
+    distributed = setup_distributed()
+    init_wandb = distributed.rank == 0
+    args = parse_args_and_setup_wandb(init_wandb=init_wandb)
+    print("ARGS: ", args, flush=True)
+    args.distributed = distributed
+
+    global DEVICE
+    if torch.cuda.is_available():
+        DEVICE = torch.device(f"cuda:{distributed.local_rank}")
+    else:
+        DEVICE = torch.device("cpu")
+
+    try:
+        train(args)
+    finally:
+        if wandb.run is not None:
+            wandb.finish()
+        cleanup_distributed()
 
 if __name__ == "__main__":
-    # Set here a global device variable for the whole training script:
-    global DEVICE 
-    DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     main()    
