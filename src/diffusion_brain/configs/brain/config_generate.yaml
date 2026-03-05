@@ -1,0 +1,62 @@
+wandb:
+  project_name: generate-conditional-diffusion-brain
+
+state: generate
+
+diffusion:
+  diffusion_type: vp
+  T: 1.0 #1000.0 # 1.0
+  eps: 1.e-3 # time epsilon for the reverse timegrid
+  beta_min: 0.01 #0.1 #1.e-4 #0.01 #1.e-3 #1.e-4 # 0.01
+  beta_max: 10.0 #20.0 #0.02 #10.0 #1.e-2 #0.02 # 10.0
+
+  # diffusion_type: ve
+  # timesteps: 1000
+  # sigma_min: 0.01
+  # sigma_max: 50
+  # T: 1.0 #1000.0
+  # eps: 1.e-3 # time epsilon for the reverse timegrid
+
+data:
+  is_2d: false
+  data_name: ann-brain
+  images_data_path: './src/diffusion_brain/data/data_coco/'
+  behav_data_root: './src/diffusion_brain/data/behav/'
+  subj: "subj01"
+  fmri_data_root: '/data/datapool3/datasets/nsd_betas_condavg/' # TODO: add this as BIND to bash script
+  fmri_data_name: 'betas_average_fsaverage.npy'
+  ann_model: "resnet50" 
+  ann_model_weights: "ResNet50_Weights.IMAGENET1K_V2"
+  ann_activations_data_path: './src/diffusion_brain/data/ann_activations/'
+  layer_name: "encoder.layers.encoder_layer_11.mlp" #"avgpool"
+  roi: 5 #18 #10 #5 # do the correct indexing as described in roi_defs/streams.mgz.ctab
+  roi_defs_dir: './src/diffusion_brain/data/roi_defs/'
+  roi_file: "streams" #"HCP_MMP1" # can be streams or HCP_MMP1 or nsdgeneral
+
+model:
+  name: gfdm-unet-1d-cond #unet-diffusers #gfdm-unet #unet-diffusers # unet
+  c_in: 1
+  c_out: 1
+  time_dim: 256
+  num_classes: 1
+  cross_attention_dim: 2048 # it should be equal to dimensionality of conditioning vector! for now it's specifically re-written in the scripts
+  remove_deep_conv: false
+  input_folder: './model_outputs/ann-brain/ann-brain-cluster' #-197972/'
+  run_id: 197972
+  which: "all"  # final
+  use_autoencoder: false
+  ae_save_path: './model_outputs/ann-brain/autoencoder/'
+  ae_name: 'ae_linear'
+  ae_latent_dim: 1024
+  ae_epochs: 50
+  ae_lr: 1.e-4
+
+validation:
+  average_over_num_runs: 1 #10
+  ode: false
+  batch_size: 128 #515 #128 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
+  n_steps: 100 #100
+  guidance_scale: 20.0 #0.8
+  label_to_generate: 0 # STUB
+  output_folder: './outputs/generated_samples/ann-brain/'  
+  num_workers: 1

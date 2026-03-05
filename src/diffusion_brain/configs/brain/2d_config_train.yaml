@@ -22,7 +22,7 @@ diffusion:
 # do i want to have a joint dataloader that will take care of both ANN and fmri data? 
 data:
   data_name: ann-brain
-  is_2d: false
+  is_2d: true
   #num_sessions: 40 # may need to separate it for train/test somehow 
   images_data_path: './src/diffusion_brain/data/data_coco/'
   behav_data_root: './src/diffusion_brain/data/behav/'
@@ -39,7 +39,7 @@ data:
 
 # need to wire up the model arguments' with UNet class definition
 model:
-  name: gfdm-unet-1d-cond #dit #unet-diffusers #gfdm-unet #unet-diffusers # unet
+  name: unet-diffusers #gfdm-unet-1d-cond #dit #unet-diffusers #gfdm-unet #unet-diffusers # unet
   #input_size: 32
   num_classes: 10 # it needs to be removed later when refactoring diffusivity.py as in ann-brain case we have continuous conditioning vector and not class labels; 
   c_in: 1
@@ -92,8 +92,8 @@ train:
 validation:
   ode: false
   eval_freq: 100
-  batch_size: 64 #256 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
-  n_steps: 100 # SDE steps
+  batch_size: 32 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
+  n_steps: 10 # SDE steps
   guidance_scale: 10.0 #0.8
   output_folder: '/outputs/ann-brain/'
   num_workers: 1
