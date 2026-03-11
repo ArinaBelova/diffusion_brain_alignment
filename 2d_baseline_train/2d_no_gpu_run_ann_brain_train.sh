@@ -42,8 +42,8 @@ export APPTAINERENV_PYCORTEX_STORE="/data/datapool3/datasets/nsd_betas_condavg/"
 apptainer exec --nv --bind ${LOCAL_JOB_DIR},src:/opt/app/src,/data/datapool3/datasets/nsd_betas_condavg/,my_pycortex_db:/opt/conda/envs/diffusion_brain/share/pycortex/db \
 --env PYTHONPATH=/opt/app/src \
 ./cluster/diffusion-brain.sif \
-bash -c "python ${SLURM_SUBMIT_DIR}/src/diffusion_brain/scripts/train_sklearn.py --config ${SLURM_SUBMIT_DIR}/src/diffusion_brain/configs/brain/config_train.yaml \
---jobid ${SLURM_JOB_NAME}-${SLURM_JOB_ID} --override data.roi=$1 data.ann_model_weights=$2 data.ann_model=$3"
+bash -c "python ${SLURM_SUBMIT_DIR}/src/diffusion_brain/scripts/train_sklearn.py --config ${SLURM_SUBMIT_DIR}/src/diffusion_brain/configs/brain/2d_sklearn_config_train.yaml \
+--jobid ${SLURM_JOB_NAME}-${SLURM_JOB_ID} --override data.roi=$1 data.ann_model_weights=$2 data.ann_model=$3 data.roi_file=$4"
 
 
 echo "‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾"

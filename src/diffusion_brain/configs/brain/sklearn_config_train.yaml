@@ -1,5 +1,5 @@
 wandb:
-  project_name: conditional-diffusion-brain
+  project_name: sklearn-ann-brain
 
 state: train 
 
@@ -81,7 +81,6 @@ train:
   batch_size: 32 # 64 # train batch size, may need to decrease it for the larger models and increase for smaller ones
   dataset_size: 9485 # 10000 - 515 images as train
   num_workers: 4
-  histogram_freq: 100 # frequency of logging loss histogram to wandb, set to 0 to disable
 
 # may need to combine this with either diffusion or validation or both
 # for training don't need sampling parameters, may need to move it to the completely different evaluation config
@@ -93,9 +92,9 @@ train:
 validation:
   ode: false
   eval_freq: 100
-  batch_size: 32 #32 #256 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
+  batch_size: 64 #256 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
   n_steps: 100 # SDE steps
-  guidance_scale: 20.0 #0.8
+  guidance_scale: 10.0 #0.8
   output_folder: '/outputs/ann-brain/'
   num_workers: 1
   label_to_generate: 1 # it needs to be removed later when refactoring diffusivity.py as in ann-brain case we have continuous conditioning vector and not class labels;
