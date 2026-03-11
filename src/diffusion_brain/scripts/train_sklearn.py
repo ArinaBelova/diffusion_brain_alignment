@@ -4,12 +4,13 @@ from scipy.stats import pearsonr
 import numpy as np
 import rsatoolbox
 import wandb
+import os
 #from fracridge import FracRidgeRegressorCV
 
 from diffusion_brain.data_utils import get_dataloader
 from diffusion_brain.utils.setup import parse_args_and_setup_wandb
-from diffusion_brain.utils.fmri_behav_data_utils import get_train_test_subsets, compute_rdm
-from diffusion_brain.utils.visualise import pyplot_brain
+from diffusion_brain.utils.fmri_behav_data_utils import compute_rdm
+from diffusion_brain.utils.visualise import pyplot_brain, get_r_across_images_2d_data, get_r_across_images_1d_data
 
 def get_train_test_numpy_datasets(train_dataloader, test_dataloader, args):
     print(f"Length of the dataloaders: {len(train_dataloader)}, {len(test_dataloader)}", flush=True)
@@ -19,8 +20,30 @@ def get_train_test_numpy_datasets(train_dataloader, test_dataloader, args):
 
     return train_fmri_dataset.numpy(), test_fmri_dataset.numpy(),train_activations_dataset.numpy(), test_activations_dataset.numpy()
 
+def preprocess_2d_dataset(dataset, args):
+    # reshape the 2D fmri data to 1D (flatten the spatial dimensions)
+    print("Dataset shape (before processing):", dataset.shape)  # Should be (num_images, H, W)
+    locations_load_path = os.path.join(
+            args.data.roi_defs_dir, f"roi_preselected_extended_2d_images_res_{args.data.grid_resolution_2d}", 
+            f"{args.data.roi_file}",
+            f"{args.data.subj}_{args.data.roi}.npz"
+        )
+    
+    locations_roi = np.load(locations_load_path, allow_pickle=True)["locations"]  # [2, n_locations]
+    y_coords = locations_roi[0]
+    x_coords = locations_roi[1]
+    
+    dataset = dataset.squeeze(1)  # shape (num_images, H, W)
+    dataset = dataset[:, y_coords, x_coords]  # shape (num_images, n_locations)
+    print("Dataset shape after selecting ROI locations: ", dataset.shape, flush=True)
+    
+    return dataset
+
 def train(train_activations_dataset, train_fmri_dataset, args):
     print("Training Ridge Regression with Cross-Validation...", flush=True)
+
+    if args.data.is_2d:
+        train_fmri_dataset = preprocess_2d_dataset(train_fmri_dataset, args)
 
     print("Stats of train activations dataset:", train_activations_dataset.mean(), train_activations_dataset.std(), flush=True)
     print("Stats of train fMRI dataset:", train_fmri_dataset.mean(), train_fmri_dataset.std(), flush=True)
@@ -35,6 +58,8 @@ def train(train_activations_dataset, train_fmri_dataset, args):
     # permute rows (images) in activations matrix
     # np.random.shuffle(train_activations_dataset)
     ##############################################
+    print("Train activations dataset shape: ", train_activations_dataset.shape, flush=True)
+    print("Train fMRI dataset shape: ", train_fmri_dataset.shape, flush=True)
 
     clf = RidgeCV(alphas=alphas, scoring="r2").fit(train_activations_dataset, train_fmri_dataset)
     # , scoring="r2"
@@ -55,6 +80,11 @@ def train(train_activations_dataset, train_fmri_dataset, args):
     return clf
 
 def validate_and_visualise(clf, true_activations_dataset, true_fmri_dataset, args, step="sklearn_fitting"):
+    true_fmri_dataset_copy = true_fmri_dataset.copy()  # Make a copy to avoid modifying the original dataset
+    if args.data.is_2d:
+        # reshape the 2D fmri data to 1D (flatten the spatial dimensions)
+        true_fmri_dataset = preprocess_2d_dataset(true_fmri_dataset, args)
+        
     # validate and display the results
     print("Generating predicted fMRI data from activations...", flush=True)
     print("Shape of activations dataset:", true_activations_dataset.shape, flush=True)
@@ -65,35 +95,24 @@ def validate_and_visualise(clf, true_activations_dataset, true_fmri_dataset, arg
     score_test = clf.score(true_activations_dataset, true_fmri_dataset)
     print("Score on the test data with TRUE FMRI: ", score_test, flush=True)
 
-    print("Visualising predicted fMRI data...", flush=True)
-    # can only visualise one batch element
-    pyplot_brain(fmri_predicted[0], args=args, savename=f"generated_sample_idx_{0}_step_{step}", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png')
+    ######## 1D Visualisation of predicted and true fMRI data for the test set ##########
+    if args.data.is_2d:
+        get_r_across_images_2d_data(args, fmri_predicted, true_fmri_dataset_copy, step_num=step)
+    else:
+        print("Visualising predicted fMRI data...", flush=True)
+        # can only visualise one batch element
+        pyplot_brain(fmri_predicted[0], args=args, savename=f"generated_sample_idx_{0}_step_{step}", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png')
 
-    print("Visualising true fMRI data...", flush=True)
-    pyplot_brain(true_fmri_dataset[0], args=args, savename=f"true_sample_idx_{0}_step_{step}", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png')
+        print("Visualising true fMRI data...", flush=True)
+        pyplot_brain(true_fmri_dataset[0], args=args, savename=f"true_sample_idx_{0}_step_{step}", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png')
 
-    print("Visualising the difference MSE between true and predicted fMRI data...", flush=True)
-    print("Shape of true fMRI dataset:", true_fmri_dataset.shape, flush=True)
-    difference = (true_fmri_dataset - fmri_predicted)**2
-    pyplot_brain(difference.mean(axis=0), args=args, savename=f"roi_{args.data.roi}_difference_mse_step_{step}", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png')
+        print("Visualising the difference MSE between true and predicted fMRI data...", flush=True)
+        print("Shape of true fMRI dataset:", true_fmri_dataset.shape, flush=True)
+        difference = (true_fmri_dataset - fmri_predicted)**2
+        pyplot_brain(difference.mean(axis=0), args=args, savename=f"roi_{args.data.roi}_difference_mse_step_{step}", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png')
 
-    print("Visualising r2 correlation between true and predicted fMRI data...", flush=True)
-    r2_scores_across_images = []
-    r2_scores_across_voxels = []
-
-    for img_idx in range(true_fmri_dataset.shape[0]):
-        r2_voxel = pearsonr(fmri_predicted[img_idx, :], true_fmri_dataset[img_idx, :])[0]
-        r2_scores_across_voxels.append(r2_voxel)
-    r2_scores_across_voxels = np.array(r2_scores_across_voxels)
-
-    for voxel_idx in range(true_fmri_dataset.shape[1]):
-        r2_img = pearsonr(fmri_predicted[:, voxel_idx], true_fmri_dataset[:, voxel_idx])[0]
-        r2_scores_across_images.append(r2_img)
-    r2_scores_across_images = np.array(r2_scores_across_images)
-    pyplot_brain(r2_scores_across_images, args=args, savename=f"roi_{args.data.roi}_r2_scores_step_{step}", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png')
-    wandb.log({f"mean r2_scores_across_images_step_{step}": r2_scores_across_images.mean()})
-    wandb.log({f"mean r2_scores_across_voxels_step_{step}": r2_scores_across_voxels.mean()})
-
+        get_r_across_images_1d_data(args, fmri_predicted, true_fmri_dataset, step_num=step)
+    ########## RDM visualisation on test dataset ##########
     print("Visualising RDM on test dataset: ", flush=True)
     rdms_true_test_fmri = compute_rdm(true_fmri_dataset, args, regime="test")
     rdms_predicted_test_fmri = compute_rdm(fmri_predicted, args, regime="test")
@@ -110,15 +129,15 @@ def main():
     # get correctly shaped dataloaders with the updated batch sizes:
     train_dataloader, test_dataloader = get_dataloader(args)
     print(f"Length of the TRAIN dataset: {args.train.batch_size}", flush=True)
-    #train_fmri_dataset, test_fmri_dataset, train_activations_dataset, test_activations_dataset = get_train_test_numpy_datasets(train_dataloader, test_dataloader, args)
+    train_fmri_dataset, test_fmri_dataset, train_activations_dataset, test_activations_dataset = get_train_test_numpy_datasets(train_dataloader, test_dataloader, args)
     #################### TEST ###############################
-    train_fmri_dataset, _, train_activations_dataset, _ = get_train_test_numpy_datasets(train_dataloader, test_dataloader, args)
-    args.data.subj = "subj04"
-    train_dataloader, test_dataloader = get_dataloader(args)
-    args.train.batch_size = len(test_dataloader.dataset) # set to the full test set size
-    print("Length of TEST dataset: ", args.train.batch_size, flush=True)
-    train_dataloader, test_dataloader = get_dataloader(args)
-    _, test_fmri_dataset, _, test_activations_dataset = get_train_test_numpy_datasets(train_dataloader, test_dataloader, args)
+    # train_fmri_dataset, _, train_activations_dataset, _ = get_train_test_numpy_datasets(train_dataloader, test_dataloader, args)
+    # args.data.subj = "subj04"
+    # train_dataloader, test_dataloader = get_dataloader(args)
+    # args.train.batch_size = len(test_dataloader.dataset) # set to the full test set size
+    # print("Length of TEST dataset: ", args.train.batch_size, flush=True)
+    # train_dataloader, test_dataloader = get_dataloader(args)
+    # _, test_fmri_dataset, _, test_activations_dataset = get_train_test_numpy_datasets(train_dataloader, test_dataloader, args)
     #########################################################
     # print("max of train fmri indexes:", train_fmri_dataset.indices.max(), flush=True)
     # print("max of test fmri indexes:", test_fmri_dataset.indices.max(), flush=True)

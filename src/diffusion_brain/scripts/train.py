@@ -19,7 +19,6 @@ from diffusion_brain.data_utils import get_dataloader
 import diffusion_brain.utils.diffusivity as diffusivity
 from diffusion_brain.utils.setup import parse_args_and_setup_wandb
 from diffusion_brain.utils.visualise import visualise_and_save_results, pyplot_brain
-from diffusion_brain.utils.fmri_behav_data_utils import ensure_fmri_roi_exists, matrix_to_signal_1d
 
 
 def unwrap_model(model):
@@ -94,6 +93,29 @@ def pad_1d_to_factor(x, factor):
     if pad_len == 0:
         return x, 0
     return F.pad(x, (0, pad_len)), pad_len
+
+
+def log_loss_histogram(losses, step, num_bins=100):
+    """Create and log a histogram of loss values to wandb"""
+    if len(losses) == 0:
+        return
+    
+    losses_array = np.array(losses)
+    
+    # Create histogram data for wandb
+    wandb_histogram = wandb.Histogram(sequence=losses_array, num_bins=num_bins)
+    
+    log_wandb(
+        {
+            "train/loss_histogram": wandb_histogram,
+            "train/loss_stats": {
+                "mean": float(np.mean(losses_array)),
+                "min": float(np.min(losses_array)),
+                "max": float(np.max(losses_array)),
+            }
+        },
+        step=step,
+    )
 
 
 def train_linear_autoencoder(args, train_dataloader, device):
@@ -191,6 +213,7 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
     else:    
         masked_labels = label * (1 - mask) + (args.model.num_classes * mask) # don't use -1 as the empty label as nn.Embedding will throw error
         masked_labels = masked_labels.long()    
+        class_labels_arg = args.model.num_classes
 
     if args.model.name in ["unet-diffusers", "unet-diffusers-1d"]:
         # class_embeddings = score_fn.class_embedding(masked_labels)  # shape [bs, cross_attn_dim]
@@ -203,7 +226,8 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
         t = t * 999
         #######################
 
-        #encoder_hidden_states = torch.zeros(x_t.shape[0], 1, args.model.cross_attention_dim, device=x_t.device)
+        if args.data.data_name == "mnist":
+            encoder_hidden_states = torch.zeros(x_t.shape[0], 1, args.model.cross_attention_dim, device=x_t.device)
 
         predicted_score = score_fn(x_t, t, encoder_hidden_states = encoder_hidden_states, class_labels=class_labels_arg).sample    # class_labels=masked_labels  and zeros encoder_hidden_states for MNIST case
     elif args.model.name == "gfdm-unet-1d-cond":
@@ -219,7 +243,7 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
     
     return loss
 
-def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_function, diffusion_process, args, autoencoder=None):
+def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_function, diffusion_process, args, autoencoder=None, loss_history=None):
     model.train()
     # TODO: check why data type changes from float64 to DoubleTensor somewhere here...    
     data, label = next(train_dataloader)
@@ -253,9 +277,6 @@ def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_func
             if pad_len > 0 and step == 0:
                 print(f"Padded input length from {orig_len} to {orig_len + pad_len} (factor {factor})")
     elif args.model.name == "unet-diffusers":
-        # For 2D images: ensure shape is [batch, channels, H, W]
-        # if args.data.is_2d and data.ndim == 3:
-        #     data = data[:, None, :, :]  # Add channel dimension
         label = label.float()
         orig_len = None
     else:
@@ -277,6 +298,12 @@ def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_func
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     optimizer.step()
     lr_scheduler.step()
+
+    loss_item = float(loss.item())
+    
+    # Track loss for histogram
+    if loss_history is not None:
+        loss_history.append(loss_item)
 
     log_wandb(
         {
@@ -304,6 +331,10 @@ def train(args):
     #  TODO: make it more elegant later
     if args.data.data_name == "ann-brain":
         one_fmri_signal, one_cond_signal = next(iter(train_dataloader))
+        # #####################
+        # grid_to_display = torchvision.utils.make_grid(one_fmri_signal * 255, nrow=int(np.sqrt(args.train.batch_size)))
+        # wandb.log({"one_fmri_signal": wandb.Image(grid_to_display)})
+        # #####################
         args.model.input_size = tuple(one_fmri_signal.shape[1:])   
         args.model.cross_attention_dim = one_cond_signal.shape[1]
 
@@ -339,9 +370,9 @@ def train(args):
 
             #pyplot_brain(sample_data, args=args, savename="original_sample", figpath=f"{args.validation.output_folder}/{args.jobid}/autoencoder", save_type='png')
             #pyplot_brain(reconstructed, args=args, savename="reconstructed_sample", figpath=f"{args.validation.output_folder}/{args.jobid}/autoencoder", save_type='png')
-            r2_scores_sample_recounstructed = pearsonr(sample_data, reconstructed)[0]
-            log_wandb({"autoencoder/r2_score": r2_scores_sample_recounstructed}, step=0)
-            print(f"Autoencoder sample reconstruction r2 score: {r2_scores_sample_recounstructed:.4f}", flush=True)
+            r_scores_sample_recounstructed = pearsonr(sample_data, reconstructed)[0]
+            log_wandb({"autoencoder/r_score": r_scores_sample_recounstructed}, step=0)
+            print(f"Autoencoder sample reconstruction r score: {r_scores_sample_recounstructed:.4f}", flush=True)
 
         args.model.input_size_original = args.model.input_size
         args.model.input_size = args.model.ae_latent_dim
@@ -380,7 +411,13 @@ def train(args):
         if is_main_process(args):
             print(f"Step {step+1}/{args.train.steps} started.", flush=True)
 
-        train_step(step, model, optimizer, lr_scheduler, train_iterator, loss_function, diffusion_process, args, autoencoder=autoencoder)
+        loss_history = []
+        train_step(step, model, optimizer, lr_scheduler, train_iterator, loss_function, diffusion_process, args, autoencoder=autoencoder, loss_history=loss_history)
+
+        # Log loss histogram periodically (e.g., every 100 steps)
+        histogram_freq = getattr(args.train, "histogram_freq", 100)
+        if step % histogram_freq == 0 and step > 0:
+            log_loss_histogram(loss_history, step)
         
         if valid_iterator is not None and step % args.validation.eval_freq == 0:
             if is_main_process(args):
@@ -389,7 +426,7 @@ def train(args):
             # rather continuous vectors that we should sample from the validation dataloader
             # TODO: move this correlation calculation to a separate function!
             if is_main_process(args):
-                if args.model.name in ["unet-diffusers", "gfdm-unet-1d-cond", "dit"] and args.data.data_name == "ann-brain":
+                if args.data.data_name == "ann-brain": # and args.model.name == ["gfdm-unet-1d-cond", "dit", "unet-diffusers"]: # for now I only check the visual quality of generated samples for ann-brain data with the conditional model, but we can add it for other cases later if needed
                     true_fmri, cond = next(valid_iterator)
                     cond = cond.float().to(DEVICE)
                     print("Generating sample of batch_size:", args.validation.batch_size, flush=True)
@@ -402,67 +439,18 @@ def train(args):
                         cond=cond,
                     )
 
-                    # TODO: re-write matrix_to_signal_1d so it returns only the ROI voxels instead of the whole brain and then we won't need to do this indexing here; also check if this works correctly with autoencoder case where we have padding and unpadding
-                    if args.data.is_2d and generated_samples.ndim == 4:
-                        generated_samples = generated_samples.squeeze(1).cpu().numpy()  # remove channel dim
-                        true_fmri = true_fmri.squeeze(1).cpu().numpy()
-
-                        info = torch.load(os.path.join(args.data.roi_defs_dir, "roi_preselected_extended_2d_images_info", args.data.roi_file, f"{args.data.subj}_{args.data.roi}.pt"))
-                        roi_indices = np.concatenate([info["lh"]["verts_global"], info["rh"]["verts_global"]], axis=0)
-                         # Convert to full brain signals first
-                        converted_samples = []
-                        converted_samples_fmri = []
-                        for i in range(generated_samples.shape[0]):
-                            full_brain_signal = matrix_to_signal_1d(generated_samples[i], 327684, info, combined=True)
-                            converted_samples.append(full_brain_signal)
-
-                            true_full_brain_signal = matrix_to_signal_1d(true_fmri[i], 327684, info, combined=True)
-                            converted_samples_fmri.append(true_full_brain_signal)
-
-                        # Stack and convert to tensor for autoencoder if needed
-                        generated_samples = np.stack(converted_samples)  # [batch, 327684]
-                        generated_samples = torch.from_numpy(generated_samples).float()  # convert back to tensor
-                        generated_samples = generated_samples[:, roi_indices]  # extract ROI
-
-                        converted_samples_fmri = np.stack(converted_samples_fmri)  # [batch, 327684]
-                        converted_samples_fmri = torch.from_numpy(converted_samples_fmri).float()  # convert back to tensor
-                        true_fmri = converted_samples_fmri[:, roi_indices]  # extract ROI
-
                     if autoencoder is not None:
                         with torch.no_grad():
                             z = generated_samples.squeeze(1)
                             generated_samples = autoencoder.decoder(z)
                     else:
                         generated_samples = generated_samples.squeeze(1)  # remove channel dim
-                    
-                    # to store r2 scores across images for each voxel
-                    r2_scores_across_batch_images = np.empty((generated_samples.shape[1],))
-                    r2_scores_across_voxels = np.empty((generated_samples.shape[0],))
 
-                    print("True fmri shape:", true_fmri.shape, flush=True)
-                    print("Generated samples shape:", generated_samples.shape, flush=True)
-
-                    # TODO: think how interoduce inter-voxels statistics as here we treat all the voxels independently and calculate correlation across images for each voxel separately, 
-                    # but maybe we can also look at the correlation across voxels not to fall back to the univariate methods approaches
-                    print("Calculating r2 scores across batch images...", flush=True)
-                    for voxel_idx in range(generated_samples.shape[1]):
-                        true_fmri_by_image = true_fmri[:,voxel_idx].numpy()
-                        generated_sample = generated_samples[:,voxel_idx].cpu().numpy()
-                        assert len(true_fmri_by_image) == len(generated_sample)
-                        r2_scores_across_batch_images[voxel_idx] = pearsonr(true_fmri_by_image, generated_sample)[0]
-
-                    print("Calculating r2 scores across voxels...", flush=True)
-                    for image_idx in range(generated_samples.shape[0]):
-                        true_fmri_by_voxel = true_fmri[image_idx,:].numpy()
-                        generated_sample = generated_samples[image_idx,:].cpu().numpy()
-                        assert len(true_fmri_by_voxel) == len(generated_sample)
-                        r2_scores_across_voxels[image_idx] = pearsonr(true_fmri_by_voxel, generated_sample)[0]
-                    
-                    visualise_and_save_results(generated_samples, step, args, r2_scores_across_batch_images=r2_scores_across_batch_images, r2_scores_across_voxels=r2_scores_across_voxels)
-
-                else:
+                    visualise_and_save_results(generated_samples, true_fmri, step, args)
+                else: # toy, mnist and other data with discrete labels  
                     generated_samples = diffusivity.generate_samples(args.validation.batch_size, model, diffusion_process, args, device=DEVICE)
                     # TODO: add other image statistics later 
+                    print("Generated samples shape:", generated_samples.shape, flush=True)
                     visualise_and_save_results(generated_samples, step, args)
 
             barrier()

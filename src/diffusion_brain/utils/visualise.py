@@ -7,6 +7,9 @@ import numpy as np
 import cortex
 import plotly
 from sklearn.metrics import r2_score
+import scipy
+from diffusion_brain.utils.fmri_behav_data_utils import signal_to_2d
+from diffusion_brain.utils.fmri_behav_data_utils import get_train_test_indices
 
 def _attach_model_step(payload, step_num):
     if step_num is None:
@@ -16,7 +19,7 @@ def _attach_model_step(payload, step_num):
     return data
 
 
-def visualise_and_save_results(generated_samples, step, args, step_num=None, **kwargs):
+def visualise_and_save_results(generated_samples, true_fmri, step, args, step_num=None, **kwargs):
     # Use kwargs for additional arguments
     if args.data.data_name == "toy":
         generated_samples = generated_samples.cpu().numpy()
@@ -43,16 +46,17 @@ def visualise_and_save_results(generated_samples, step, args, step_num=None, **k
         # generated_samples = np.squeeze(generated_samples)
         # pyplot_brain(generated_samples, args=args, savename=f"generated_samples_step", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png', step_num=step_num)
 
-        # plot r2 correlation
-        pyplot_brain(kwargs["r2_scores_across_batch_images"], args=args, savename=f"r2_scores_across_batch_images_step", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png', step_num=step_num)
-        r2_payload = _attach_model_step({
-            "mean_r2_scores_across_batch_images": np.mean(kwargs["r2_scores_across_batch_images"]),
-            "mean_r2_scores_across_voxels": np.mean(kwargs["r2_scores_across_voxels"])
-        }, step_num)
-        wandb.log(r2_payload)
+        # plot r correlation
+        if args.data.is_2d:
+            r_scores_across_batch_images = get_r_across_images_2d_data(args, generated_samples, true_fmri, step_num=step_num)
+        else:
+            r_scores_across_batch_images = get_r_across_images_1d_data(args, generated_samples, true_fmri, step_num=step_num)
+            pyplot_brain(r_scores_across_batch_images, args=args, savename=f"r_scores_across_batch_images_step", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png', step_num=step_num)
+
     else:  
-        generated_samples = generated_samples.cpu().numpy()  
-        generated_samples = np.clip(generated_samples, 0.0, 1.0)
+        #generated_samples = generated_samples.cpu().numpy()  
+        generated_samples = torch.clip(generated_samples, 0.0, 1.0)
+        print("Generated samples properties: ", type(generated_samples), generated_samples.shape)
         grid_to_display = torchvision.utils.make_grid(generated_samples, nrow=int(np.sqrt(args.validation.batch_size)))
         wandb.log(_attach_model_step({f"validation_sample": wandb.Image(grid_to_display)}, step_num))
         # save images locally
@@ -89,3 +93,116 @@ def pyplot_brain(fsavg_data, savename, figpath, args, save_type='png', max_cmap_
     # fig.suptitle(f'{savename} - max abs val: {np.nanmax(np.abs(fsavg_data)):.2f}')
     # plt.savefig(f'{figpath}/{savename}.{save_type}', dpi=600)
     # plt.close()
+
+
+def get_r_across_images_2d_data(args, generated_data_roi_2d, true_fmri, step_num=None, **kwargs):
+    if type(generated_data_roi_2d) == torch.Tensor:
+        generated_data_roi_2d = generated_data_roi_2d.cpu().numpy()
+
+    image_shape = true_fmri.squeeze(1).shape[1:]  # Assuming true_fmri has shape (num_images, H, W) or (num_images, 1, H, W)
+
+    print("Generated data shape (before processing):", generated_data_roi_2d.shape)  # Should be (num_images, H, W)
+    locations_load_path = os.path.join(
+            args.data.roi_defs_dir, f"roi_preselected_extended_2d_images_res_{args.data.grid_resolution_2d}", 
+            f"{args.data.roi_file}",
+            f"{args.data.subj}_{args.data.roi}.npz"
+        )
+    
+    locations_roi = np.load(locations_load_path, allow_pickle=True)["locations"]  # [2, n_locations]
+
+    print("True signal shape: ", true_fmri.shape)  # Should be (n_locations, n_timepoints)
+    y_coords = locations_roi[0]
+    x_coords = locations_roi[1]
+
+    if len(generated_data_roi_2d.shape) > 2:        
+        # Extract time series for each valid location: shape (num_images, n_locations)
+        time_series = generated_data_roi_2d[:, y_coords, x_coords]
+        print("Time series shape:", time_series.shape)  # Should be (num_images, n_locations)
+    else:
+        time_series = generated_data_roi_2d    
+
+    if len(true_fmri.shape) > 2:
+        true_fmri = true_fmri.squeeze(1)[:, y_coords, x_coords]
+        print("True signal shape after squeezing:", true_fmri.shape)  # Should be (grid_size, grid_size)
+
+    # Calculate Pearson correlation for each location with either mean signal or with true signal
+    r_arr = np.array([
+        scipy.stats.pearsonr(time_series[:, i], true_fmri[:, i])[0]
+        for i in range(len(x_coords))
+    ])
+
+    print("r_arr shape:", r_arr.shape)  # Should be (n_locations,)
+
+    #r_img = np.zeros_like(generated_data_roi_2d[0])  # Assuming grid_size is the same for x and y
+    r_img = np.zeros(image_shape)
+
+    print("r_img shape:", r_img.shape)  # Should be (grid_size, grid_size)
+
+    r_img[y_coords, x_coords] = r_arr
+
+    from matplotlib.colors import TwoSlopeNorm
+    norm = TwoSlopeNorm(vmin=r_img.min(), vcenter=0, vmax=r_img.max())
+
+    plt.imshow(r_img, cmap='RdBu_r', origin="lower", norm=norm)
+    plt.colorbar()
+    plt.title(f"Correlation (r) across images for each location, resolution={args.data.grid_resolution_2d}mm")
+    fig = plt.gcf()
+
+    print("Calculating r scores across voxels...", flush=True)
+    r_scores_across_voxels = np.empty((time_series.shape[0],))
+    r2_scores_across_batch_images = np.empty((time_series.shape[1],))
+    print("Shape of r_scores_across_voxels array:", r_scores_across_voxels.shape)  # Should be (num_images,)
+
+    print("Calculating r2 scores across batch images...", flush=True)
+    for voxel_idx in range(time_series.shape[1]):
+        true_fmri_by_image = true_fmri[:,voxel_idx]
+        generated_sample = time_series[:,voxel_idx]
+        assert len(true_fmri_by_image) == len(generated_sample)
+        r2_scores_across_batch_images[voxel_idx] = scipy.stats.pearsonr(true_fmri_by_image, generated_sample)[0]
+
+    print("Calculating r scores across voxels...", flush=True)
+    for image_idx in range(time_series.shape[0]):
+        true_fmri_by_voxel = true_fmri[image_idx,:] 
+        generated_sample = time_series[image_idx,:]
+        assert len(true_fmri_by_voxel) == len(generated_sample)
+        r_scores_across_voxels[image_idx] = scipy.stats.pearsonr(true_fmri_by_voxel, generated_sample)[0]
+
+    r_payload = _attach_model_step({"r_image": wandb.Image(fig),
+                                    "mean_r_scores_across_voxels": np.mean(r_scores_across_voxels),
+                                    "mean_r2_scores_across_batch_images": np.mean(r2_scores_across_batch_images)}, step_num)
+    wandb.log(r_payload)
+
+    plt.close(fig)    
+
+def get_r_across_images_1d_data(args, generated_data_roi, true_fmri, step_num=None, **kwargs):
+     # to store r scores across images for each voxel
+    r_scores_across_batch_images = np.empty((generated_data_roi.shape[1],))
+    r_scores_across_voxels = np.empty((generated_data_roi.shape[0],))
+
+    print("True fmri shape:", true_fmri.shape, flush=True)
+    print("Generated samples shape:", generated_data_roi.shape, flush=True)
+
+    # TODO: think how interoduce inter-voxels statistics as here we treat all the voxels independently and calculate correlation across images for each voxel separately, 
+    # but maybe we can also look at the correlation across voxels not to fall back to the univariate methods approaches
+    print("Calculating r scores across batch images...", flush=True)
+    for voxel_idx in range(generated_data_roi.shape[1]):
+        true_fmri_by_image = true_fmri[:,voxel_idx].numpy()
+        generated_sample = generated_data_roi[:,voxel_idx].cpu().numpy()
+        assert len(true_fmri_by_image) == len(generated_sample)
+        r_scores_across_batch_images[voxel_idx] = scipy.stats.pearsonr(true_fmri_by_image, generated_sample)[0]
+
+    print("Calculating r scores across voxels...", flush=True)
+    for image_idx in range(generated_data_roi.shape[0]):
+        true_fmri_by_voxel = true_fmri[image_idx,:].numpy()
+        generated_sample = generated_data_roi[image_idx,:].cpu().numpy()
+        assert len(true_fmri_by_voxel) == len(generated_sample)
+        r_scores_across_voxels[image_idx] = scipy.stats.pearsonr(true_fmri_by_voxel, generated_sample)[0]
+    
+    r_payload = _attach_model_step({
+        "mean_r_scores_across_batch_images": np.mean(r_scores_across_batch_images),
+        "mean_r_scores_across_voxels": np.mean(r_scores_across_voxels)
+    }, step_num)
+
+    wandb.log(r_payload)
+
+                    

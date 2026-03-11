@@ -55,19 +55,6 @@ def get_ann_brain_dataloader(args):
     # 2. Ensure fMRI ROI data exists (main process, thread-safe)
     fmri_roi_path = ensure_fmri_roi_exists(args)
     
-    roi_indices_path = os.path.join(args.data.roi_defs_dir, "roi_indices", f"{args.data.roi_file}", f"{args.data.roi}.npy")
-    roi_indices = np.load(roi_indices_path, allow_pickle=True)
-    
-    # Determine input size based on 1D or 2D
-    if args.data.is_2d:
-        # For 2D, we need to set input size based on image dimensions
-        # This will be loaded from the pre-processed file or computed later
-        args.model.input_size = None  # Will be set after loading dataset
-        print("Using 2D fMRI format (will determine input shape from data)")
-    else:
-        args.model.input_size = int(len(roi_indices))
-        print(f"Setting model.input_size to ROI voxel count: {args.model.input_size}")
-    
     # 3. Ensure ANN activations exist (main process, thread-safe)
     train_activations_path = os.path.join(
         args.data.ann_activations_data_path,
@@ -82,22 +69,11 @@ def get_ann_brain_dataloader(args):
     ensure_activations_exist(train_activations_path, train_nsd_ids, args)
     ensure_activations_exist(test_activations_path, test_nsd_ids, args)
 
-    # 4. Construct 2D fMRI path if needed
-    fmri_roi_2d_path = None
-    if args.data.is_2d:
-        fmri_roi_2d_path = os.path.join(
-            args.data.roi_defs_dir,
-            "roi_preselected_extended_2d_images",
-            f"{args.data.roi_file}",
-            f"{args.data.subj}_{args.data.roi}.pt"
-        )
-
     # 5. Create dataset
     train_dataset = PairedBrainAnnDataset(
         activations_path=train_activations_path,
         fmri_roi_path=fmri_roi_path,
         sample_indices=train_indices,
-        fmri_roi_2d_path=fmri_roi_2d_path,
         is_2d=args.data.is_2d,
     )
 
@@ -105,7 +81,6 @@ def get_ann_brain_dataloader(args):
         activations_path=test_activations_path,
         fmri_roi_path=fmri_roi_path,
         sample_indices=test_indices,
-        fmri_roi_2d_path=fmri_roi_2d_path,
         is_2d=args.data.is_2d,
     )
     

@@ -2,9 +2,7 @@ import torch
 from torch.utils.data import Dataset
 import os
 from pathlib import Path
-from diffusion_brain.utils.fmri_behav_data_utils import precompute_roi_indices, signal_to_2d
 import numpy as np
-import pickle
 
 class AnnActivationsDataset(Dataset):
     """Multi-worker safe dataset for pre-computed activations."""
@@ -67,7 +65,6 @@ class PairedBrainAnnDataset(Dataset):
         activations_path,
         fmri_roi_path,
         sample_indices,
-        fmri_roi_2d_path=None,
         is_2d=False,
     ):
         """
@@ -81,20 +78,12 @@ class PairedBrainAnnDataset(Dataset):
         self.activations = torch.load(Path(activations_path), map_location="cpu")
         self.is_2d = is_2d
         
-        # Load fMRI data (1D or pre-processed 2D)
-        if is_2d:
-            if not fmri_roi_2d_path or not os.path.isfile(fmri_roi_2d_path):
-                raise FileNotFoundError(
-                    f"2D fMRI data not found at {fmri_roi_2d_path}. "
-                    f"Please run preprocessing with is_2d=true first."
-                )
-            print(f"Loading pre-processed 2D fMRI images from {fmri_roi_2d_path}")
-            # TODO@ maybe also load here the extended roi_info information so I can use it to transform the 2D images back to 1D for the evaluation stage
-            fmri_2d_all = torch.load(Path(fmri_roi_2d_path), map_location="cpu")
-            self.fmri_data = fmri_2d_all[sample_indices]
+        if self.is_2d:
+            fmri_data = np.load(fmri_roi_path, allow_pickle=True)["data"]
+            self.fmri_data = fmri_data[sample_indices]  # [n_split, H, W]
         else:
             fmri_all = torch.load(Path(fmri_roi_path), map_location="cpu")
-            self.fmri_data = fmri_all[sample_indices]
+            self.fmri_data = fmri_all[sample_indices] # [n_split, n_voxels]
         
         assert len(self.fmri_data) == len(self.activations), \
             f"Mismatch: fMRI={len(self.fmri_data)}, activations={len(self.activations)}"
