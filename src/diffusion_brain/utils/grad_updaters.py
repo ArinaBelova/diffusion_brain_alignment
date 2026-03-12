@@ -23,18 +23,27 @@ def set_optimiser(args, model):
 
     return optimizer
 
-def set_learning_rate_scheduler(optimizer, args):
-    scheduler = None              
+def set_learning_rate_scheduler(optimizer, args, total_steps=None):
+    """Set up learning rate scheduler.
+    
+    Args:
+        optimizer: The optimizer
+        args: Training arguments
+        total_steps: Total number of optimizer steps (for OneCycleLR with gradient accumulation)
+                     If None, uses args.train.steps
+    """
+    scheduler = None
+    
+    # Use provided total_steps or fall back to args.train.steps
+    num_steps = total_steps if total_steps is not None else args.train.steps
     
     if args.optim.scheduler_name == 'plateau':
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, 
                                                          mode=args.optim.scheduler_mode, factor=args.optim.factor,
                                                          patience=args.optim.patience, min_lr=args.optim.min_lr)
     elif args.optim.scheduler_name == 'onecycle':
-        print("Using OneCycleLR scheduler")
-        #print("num of total steps: ", args.train.epochs * math.ceil(args.train.dataset_size/args.train.batch_size))
+        print(f"Using OneCycleLR scheduler with {num_steps} total steps")
         scheduler = optim.lr_scheduler.OneCycleLR(optimizer=optimizer, max_lr=args.optim.max_lr, 
-                                                   total_steps=args.train.steps)
-                                                   #total_steps=args.train.epochs * math.ceil(args.train.dataset_size / args.train.batch_size))
+                                                   total_steps=num_steps)
     
     return scheduler

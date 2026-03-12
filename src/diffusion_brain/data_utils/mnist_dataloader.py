@@ -3,7 +3,6 @@ import torchvision
 import torchvision.transforms as transforms
 import matplotlib.pyplot as plt
 import numpy as np
-from torch.utils.data.distributed import DistributedSampler
 import diffusion_brain.utils.diffusivity as diffusivity
 
 def get_mnist_dataloader(args):
@@ -22,19 +21,8 @@ def get_mnist_dataloader(args):
     train_batch_size = args.train.batch_size if hasattr(args.train, 'batch_size') else 64
     val_batch_size = args.validation.batch_size if hasattr(args.validation, 'batch_size') else 1
 
-    distributed = getattr(args, "distributed", None)
-    train_sampler = None
-    if distributed is not None and getattr(distributed, "is_distributed", False):
-        train_sampler = DistributedSampler(
-            train_set,
-            num_replicas=distributed.world_size,
-            rank=distributed.rank,
-            shuffle=True,
-            drop_last=False,
-        )
-
     train_loader = torch.utils.data.DataLoader(train_set, batch_size=train_batch_size,
-                                              shuffle=train_sampler is None, sampler=train_sampler, num_workers=2)
+                                              shuffle=True, num_workers=2)
     val_loader = torch.utils.data.DataLoader(val_set, batch_size=val_batch_size,
                                               shuffle=True, num_workers=2)
 

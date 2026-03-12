@@ -85,6 +85,8 @@ class PairedBrainAnnDataset(Dataset):
             fmri_all = torch.load(Path(fmri_roi_path), map_location="cpu")
             self.fmri_data = fmri_all[sample_indices] # [n_split, n_voxels]
         
+        print(f"Statistics of fMRI data: max={self.fmri_data.max():.4f}, min={self.fmri_data.min():.4f}, mean={self.fmri_data.mean():.4f}, std={self.fmri_data.std():.4f}")
+        
         assert len(self.fmri_data) == len(self.activations), \
             f"Mismatch: fMRI={len(self.fmri_data)}, activations={len(self.activations)}"
         

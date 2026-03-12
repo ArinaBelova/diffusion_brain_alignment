@@ -3,7 +3,6 @@
 # and annotation is the corresponding activations from layer of ANN, given the coco image
 
 from torch.utils.data import DataLoader, TensorDataset, Dataset
-from torch.utils.data.distributed import DistributedSampler
 import torch 
 import numpy as np
 import os
@@ -11,18 +10,6 @@ import os
 from diffusion_brain.datasets.paired_brain_ann_dataset import AnnActivationsDataset, PairedBrainAnnDataset
 from diffusion_brain.utils.ann_activations_utils import ensure_activations_exist
 from diffusion_brain.utils.fmri_behav_data_utils import get_train_test_subsets, get_train_test_indices, ensure_fmri_roi_exists
-
-def _build_train_sampler(dataset, args):
-    distributed = getattr(args, "distributed", None)
-    if distributed is None or not getattr(distributed, "is_distributed", False):
-        return None
-    return DistributedSampler(
-        dataset,
-        num_replicas=distributed.world_size,
-        rank=distributed.rank,
-        shuffle=True,
-        drop_last=True,
-    )
 
 class ZipDataset(Dataset):
     def __init__(self, *datasets):
@@ -96,12 +83,10 @@ def get_ann_brain_dataloader(args):
     if args.state != "train":
         return test_dataloader
     
-    train_sampler = _build_train_sampler(train_dataset, args)
     train_dataloader = torch.utils.data.DataLoader(
         train_dataset,
         batch_size=args.train.batch_size,
-        shuffle=train_sampler is None,
-        sampler=train_sampler,
+        shuffle=True,
         num_workers=args.train.num_workers,
         drop_last=True
     )

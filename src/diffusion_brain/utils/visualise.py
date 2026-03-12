@@ -5,11 +5,7 @@ import wandb
 from matplotlib import pyplot as plt
 import numpy as np
 import cortex
-import plotly
-from sklearn.metrics import r2_score
 import scipy
-from diffusion_brain.utils.fmri_behav_data_utils import signal_to_2d
-from diffusion_brain.utils.fmri_behav_data_utils import get_train_test_indices
 
 def _attach_model_step(payload, step_num):
     if step_num is None:
@@ -37,6 +33,9 @@ def visualise_and_save_results(generated_samples, true_fmri, step, args, step_nu
         ax.set_ylim(-args.data.radius - 2, args.data.radius + 2)
         wandb.log(_attach_model_step({"validation_sample": wandb.Image(fig)}, step_num))
         plt.close(fig)
+
+        return -float('inf') # for toy data we don't calculate r scores, as they are not informative for this type of data
+    
     elif args.data.data_name == "ann-brain":
         # for now I don't check the visual quality of generated samples, so I don't want to use this function
         # if isinstance(generated_samples, torch.Tensor):
@@ -52,6 +51,9 @@ def visualise_and_save_results(generated_samples, true_fmri, step, args, step_nu
         else:
             r_scores_across_batch_images = get_r_across_images_1d_data(args, generated_samples, true_fmri, step_num=step_num)
             pyplot_brain(r_scores_across_batch_images, args=args, savename=f"r_scores_across_batch_images_step", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png', step_num=step_num)
+            r_scores_across_batch_images = np.mean(r_scores_across_batch_images)
+            
+        return r_scores_across_batch_images    
 
     else:  
         #generated_samples = generated_samples.cpu().numpy()  
@@ -64,6 +66,8 @@ def visualise_and_save_results(generated_samples, true_fmri, step, args, step_nu
         if not os.path.exists(directory_to_save):
             os.makedirs(directory_to_save)
         torchvision.utils.save_image(generated_samples, f"{directory_to_save}/generated_samples_step_{step}.png", nrow=int(np.sqrt(args.validation.batch_size)))
+
+        return -float('inf')
 
 # Function is courtesy of https://github.com/adriendoerig/visuo_llm/blob/main/src/nsd_visuo_semantics/utils/py_plot_brain_utils.py
 def pyplot_brain(fsavg_data, savename, figpath, args, save_type='png', max_cmap_val=None, step_num=None):
@@ -150,15 +154,15 @@ def get_r_across_images_2d_data(args, generated_data_roi_2d, true_fmri, step_num
 
     print("Calculating r scores across voxels...", flush=True)
     r_scores_across_voxels = np.empty((time_series.shape[0],))
-    r2_scores_across_batch_images = np.empty((time_series.shape[1],))
+    r_scores_across_batch_images = np.empty((time_series.shape[1],))
     print("Shape of r_scores_across_voxels array:", r_scores_across_voxels.shape)  # Should be (num_images,)
 
-    print("Calculating r2 scores across batch images...", flush=True)
+    print("Calculating r scores across batch images...", flush=True)
     for voxel_idx in range(time_series.shape[1]):
         true_fmri_by_image = true_fmri[:,voxel_idx]
         generated_sample = time_series[:,voxel_idx]
         assert len(true_fmri_by_image) == len(generated_sample)
-        r2_scores_across_batch_images[voxel_idx] = scipy.stats.pearsonr(true_fmri_by_image, generated_sample)[0]
+        r_scores_across_batch_images[voxel_idx] = scipy.stats.pearsonr(true_fmri_by_image, generated_sample)[0]
 
     print("Calculating r scores across voxels...", flush=True)
     for image_idx in range(time_series.shape[0]):
@@ -169,10 +173,12 @@ def get_r_across_images_2d_data(args, generated_data_roi_2d, true_fmri, step_num
 
     r_payload = _attach_model_step({"r_image": wandb.Image(fig),
                                     "mean_r_scores_across_voxels": np.mean(r_scores_across_voxels),
-                                    "mean_r2_scores_across_batch_images": np.mean(r2_scores_across_batch_images)}, step_num)
+                                    "mean_r_scores_across_batch_images": np.mean(r_scores_across_batch_images)}, step_num)
     wandb.log(r_payload)
 
     plt.close(fig)    
+
+    return np.mean(r_scores_across_batch_images) # important for saving the best running model based on this metric 
 
 def get_r_across_images_1d_data(args, generated_data_roi, true_fmri, step_num=None, **kwargs):
      # to store r scores across images for each voxel
@@ -204,5 +210,7 @@ def get_r_across_images_1d_data(args, generated_data_roi, true_fmri, step_num=No
     }, step_num)
 
     wandb.log(r_payload)
+
+    return r_scores_across_batch_images #np.mean(r_scores_across_batch_images)
 
                     

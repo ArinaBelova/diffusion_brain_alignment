@@ -113,12 +113,20 @@ def generate_sample_loop(args):
         print("Testing all the models in the model folder...")
         model_files = [f for f in os.listdir(args.model.input_folder) if f.endswith('.pth')]
         model_files = sorted(model_files, key=_model_file_sort_key)
+    elif isinstance(args.model.which, (list, tuple)):
+        print(f"Testing the models at steps {args.model.which}")
+        model_files = []
+        for step in args.model.which:
+            if str(step).lower() == "final":
+                model_files.append("model_final.pth")
+            else:
+                model_files.append(f"model_step_{step}.pth")
     else:
         print(f"Testing the model at step {args.model.which}")
         if str(args.model.which).lower() == "final":
             model_files = ["model_final.pth"]
         else:
-            model_files = [f"model_step_{args.model.which}.pth"]    
+            model_files = [f"model_step_{args.model.which}.pth"]
 
     for model_file in model_files:
         print("Setting up the model: ", model_file)

@@ -27,26 +27,46 @@ def set_model(args):
                     label_dim=args.model.cross_attention_dim,) # for continuous labels, we can just use an MLP to embed them into the same space as timestep embeddings)    
     elif args.model.name == "unet-diffusers":
         print("Setting UNet model from diffusers library")
+        # Use CrossAttn only at deepest layer (smallest resolution) to save memory
         model = UNet2DConditionModel(
             in_channels=args.model.c_in,
             out_channels=args.model.c_out,
             sample_size=args.model.input_size,
-            block_out_channels=(64,128,256),
+            block_out_channels=(64, 128, 256),
             down_block_types=(
                 "DownBlock2D",
                 "DownBlock2D",
-                "DownBlock2D",
+                "CrossAttnDownBlock2D",  # CrossAttn only at deepest (32x32 for 256 input)
             ),
             up_block_types=(
-                "UpBlock2D",
+                "CrossAttnUpBlock2D",    # CrossAttn only at deepest
                 "UpBlock2D",
                 "UpBlock2D",
             ),
-            #norm_num_groups=8,
-            # cross_attention_dim=args.model.cross_attention_dim, # I don't want to have cross-attention, may come handy when I do the full project
             cross_attention_dim=args.model.cross_attention_dim,
-            num_class_embeds = None)
-            # num_class_embeds=args.model.num_classes + 1)
+            num_class_embeds=None,
+        )
+        
+        # model = UNet2DConditionModel(
+        #     in_channels=args.model.c_in,
+        #     out_channels=args.model.c_out,
+        #     sample_size=args.model.input_size,  # 256 power of 2
+        #     block_out_channels=(128, 256, 512, 512),
+        #     down_block_types=(
+        #         "DownBlock2D",
+        #         "DownBlock2D",
+        #         "AttnDownBlock2D",
+        #         "AttnDownBlock2D",
+        #     ),
+        #     up_block_types=(
+        #         "AttnUpBlock2D",
+        #         "AttnUpBlock2D",
+        #         "UpBlock2D",
+        #         "UpBlock2D",
+        #     ),
+        #     cross_attention_dim=args.model.cross_attention_dim,
+        #     num_class_embeds=None,
+        # )   
         
         # playing around to figure out how to do conditioning on this model:
         # result@ don't change this class embedding!

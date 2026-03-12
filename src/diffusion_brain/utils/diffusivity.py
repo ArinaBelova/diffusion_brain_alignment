@@ -172,23 +172,28 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
         #     else:
         #         score = score_fn(x, t, y_target) / torch.sqrt(diffusion_process.var(t))
         # else:
-        # for mnist:
+        # for mnist and ann-brain with UNet2DConditionModel:
         if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
 
             #######################
             time_unet = t * 999
             #######################
             
-            encoder_hidden_states = torch.zeros(x.shape[0], 1, args.model.cross_attention_dim, device=x.device)
-
-            # print("y_empty:", y_empty.device, y_empty.shape, y_empty.dtype)
-            # print("y_target:", y_target.device, y_target.shape, y_target.dtype)
-            # print("x: ", x.device, x.shape, x.dtype)
-            # print("t: ", t.device, t.shape, t.dtype)
-            # print("encoder_hidden_states: ", encoder_hidden_states.device, encoder_hidden_states.shape, encoder_hidden_states.dtype)
-
-            score_uncond = score_fn(x, time_unet, encoder_hidden_states = encoder_hidden_states, class_labels=y_empty).sample
-            score_cond = score_fn(x, time_unet, encoder_hidden_states = encoder_hidden_states, class_labels=y_target).sample
+            cond_seq_len = getattr(args.model, "cond_seq_len", 4)
+            
+            # For ann-brain: use actual conditioning via cross-attention
+            if cond is not None:
+                # cond shape: (batch, cond_dim) -> (batch, seq_len, cond_dim)
+                encoder_hidden_states_cond = cond.unsqueeze(1).expand(-1, cond_seq_len, -1).float()
+                encoder_hidden_states_uncond = torch.zeros_like(encoder_hidden_states_cond)
+                
+                score_uncond = score_fn(x, time_unet, encoder_hidden_states=encoder_hidden_states_uncond, class_labels=None).sample
+                score_cond = score_fn(x, time_unet, encoder_hidden_states=encoder_hidden_states_cond, class_labels=None).sample
+            else:
+                # For mnist: use class_labels (discrete)
+                encoder_hidden_states = torch.zeros(x.shape[0], cond_seq_len, args.model.cross_attention_dim, device=x.device)
+                score_uncond = score_fn(x, time_unet, encoder_hidden_states=encoder_hidden_states, class_labels=y_empty).sample
+                score_cond = score_fn(x, time_unet, encoder_hidden_states=encoder_hidden_states, class_labels=y_target).sample
         # for ann-brain case with continuous conditioning vector:
         elif args.model.name == "gfdm-unet-1d-cond" or args.model.name == "dit":
             #######################
@@ -243,6 +248,10 @@ def generate_samples(num_samples: int,
     """Function to generate samples from the learned diffusion model"""
     # initial samples from p_T
     raw_model = _unwrap_model(model)
+    
+    # Track original size for cropping 2D data back
+    original_size = getattr(args.model, "input_size_original", None)
+    
     if args.data.data_name == "toy":
         dim_x = [args.model.input_size]
     elif args.model.name == "gfdm-unet-1d-cond":
@@ -259,7 +268,8 @@ def generate_samples(num_samples: int,
     elif args.data.data_name == "mnist": 
         dim_x = (args.model.c_in, args.model.input_size, args.model.input_size)
     else:
-        dim_x = args.model.input_size # for rectangular shapes
+        # For 2D brain data: input_size is already the padded size (C, H_padded, W_padded)
+        dim_x = args.model.input_size
 
     noise = torch.randn(size=(num_samples, *dim_x), device=device)
     mu, std = diffusion_process.brown_moments(torch.zeros(num_samples, *dim_x).to(device), diffusion_process.T)
@@ -287,6 +297,12 @@ def generate_samples(num_samples: int,
 
     if args.model.name == "gfdm-unet-1d-cond":
         x_0 = x_0[..., :orig_len]
+    
+    # Crop 2D brain data back to original size
+    is_2d = getattr(args.data, "is_2d", False)
+    if is_2d and original_size is not None and len(original_size) == 3:
+        _, orig_h, orig_w = original_size
+        x_0 = x_0[..., :orig_h, :orig_w]
 
     # print("x_0 and label shapes are: ", x_0.shape, cond.shape, flush=True)    
     return x_0 # * 255 as I don't really know what scale the model learned...
