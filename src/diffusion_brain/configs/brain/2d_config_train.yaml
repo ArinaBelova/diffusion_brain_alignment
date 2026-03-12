@@ -23,7 +23,7 @@ diffusion:
 data:
   data_name: ann-brain
   is_2d: true
-  grid_resolution_2d: 1.0 # in mm, for 2d case only, it will determine the grid size based on the bounding box of the ROI vertices;
+  grid_resolution_2d: 1.0 #1.0 # in mm, for 2d case only, it will determine the grid size based on the bounding box of the ROI vertices;
   #num_sessions: 40 # may need to separate it for train/test somehow 
   images_data_path: './src/diffusion_brain/data/data_coco/'
   behav_data_root: './src/diffusion_brain/data/behav/'
@@ -36,23 +36,23 @@ data:
   layer_name: "encoder.layers.encoder_layer_11.mlp" #"avgpool"
   roi: 5 #18 #10 #5 # do the correct indexing as described in roi_defs/streams.mgz.ctab
   roi_defs_dir: './src/diffusion_brain/data/roi_defs/'
-  roi_file: "streams" #"HCP_MMP1" # can be streams or HCP_MMP1 or nsdgeneral
+  roi_file: "streams" #"streams" #"HCP_MMP1" # can be streams or HCP_MMP1 or nsdgeneral
 
 # need to wire up the model arguments' with UNet class definition
 model:
   name: unet-diffusers #gfdm-unet-1d-cond #dit #unet-diffusers #gfdm-unet #unet-diffusers # unet
-  #input_size: 32
-  num_classes: 10 # it needs to be removed later when refactoring diffusivity.py as in ann-brain case we have continuous conditioning vector and not class labels; 
   c_in: 1
   c_out: 1
   time_dim: 256
-  #cross_attention_dim: 2048 # it should be equal to dimensionality of conditioning vector!
+  cond_seq_len: 4
+  num_classes: 1 # we may use it to have double-conditioning on the subject ID
+  #cross_attention_dim: 2048 # it should be equal to dimensionality of conditioning vector, will be defined during training
   ######### dit############## depth=12, hidden_size=384, patch_size=8, num_heads=6
   num_heads: 12
   depth: 12
   hidden_size: 768
   ###########################
-  dropout_prob: 0.2 # label dropout in classifier-free training
+  dropout_prob: 0.2 #0.2 # label dropout in classifier-free training
   remove_deep_conv: false
   save_freq: 500
   output_folder: './model_outputs/ann-brain/'
@@ -79,10 +79,13 @@ optim:
 
 train:
   steps: 10000 #2000 # train steps
-  batch_size: 32 #32 # 64 # train batch size, may need to decrease it for the larger models and increase for smaller ones
+  batch_size: 8 # reduced for memory with CrossAttn blocks
   dataset_size: 9485 # 10000 - 515 images as train
   num_workers: 4
   histogram_freq: 1000 # frequency of logging loss histogram to wandb, set to 0 to disable
+  use_mixed_precision: true #true  # Enable bfloat16 training
+  gradient_accumulation_steps: 4 #8  # effective batch size = 1 * 8 = 8
+  gradient_checkpointing: true #true  #ue saves ~30-40% memory
 
 # may need to combine this with either diffusion or validation or both
 # for training don't need sampling parameters, may need to move it to the completely different evaluation config
@@ -93,8 +96,8 @@ train:
 
 validation:
   ode: false
-  eval_freq: 1000
-  batch_size: 64 #64 #32 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
+  eval_freq: 100
+  batch_size: 64 #32 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
   n_steps: 100 # SDE steps
   guidance_scale: 10.0 #0.8
   output_folder: '/outputs/ann-brain/'

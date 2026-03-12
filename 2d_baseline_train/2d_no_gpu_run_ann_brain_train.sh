@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=no-gpu-baseline-train-ann-brain-diffusion
+#SBATCH --job-name=2d-no-gpu-baseline-train-ann-brain-diffusion
 
 #SBATCH --mail-type=ALL
 

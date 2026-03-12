@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=cluster-generate-ann-brain-diffusion
+#SBATCH --job-name=2d-cluster-generate-ann-brain-diffusion
 
 #SBATCH --mail-type=ALL
 

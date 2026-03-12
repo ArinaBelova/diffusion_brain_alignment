@@ -54,8 +54,9 @@ export APPTAINERENV_GLOO_SOCKET_IFNAME=${GLOO_SOCKET_IFNAME}
 apptainer exec --nv --bind ${LOCAL_JOB_DIR},src:/opt/app/src,/data/datapool3/datasets/nsd_betas_condavg/,my_pycortex_db:/opt/conda/envs/diffusion_brain/share/pycortex/db \
 --env PYTHONPATH=/opt/app/src \
 ./cluster/diffusion-brain.sif \
-bash -c "torchrun --nnodes=1 --nproc_per_node=${NPROC_PER_NODE} --rdzv_backend=c10d --rdzv_endpoint=${MASTER_ADDR}:${MASTER_PORT} ${SLURM_SUBMIT_DIR}/src/diffusion_brain/scripts/train.py --config ${SLURM_SUBMIT_DIR}/src/diffusion_brain/configs/brain/config_train.yaml --jobid ann-brain-cluster-${SLURM_JOB_ID}"
-# bash -c "python ${SLURM_SUBMIT_DIR}/src/diffusion_brain/scripts/train.py --config ${SLURM_SUBMIT_DIR}/src/diffusion_brain/configs/brain/config_train.yaml --jobid ann-brain-cluster-${SLURM_JOB_ID}"
+bash -c "python ${SLURM_SUBMIT_DIR}/src/diffusion_brain/scripts/train.py --config ${SLURM_SUBMIT_DIR}/src/diffusion_brain/configs/brain/config_train.yaml --jobid ann-brain-cluster-${SLURM_JOB_ID}"
+
+#bash -c "torchrun --nnodes=1 --nproc_per_node=${NPROC_PER_NODE} --rdzv_backend=c10d --rdzv_endpoint=${MASTER_ADDR}:${MASTER_PORT} ${SLURM_SUBMIT_DIR}/src/diffusion_brain/scripts/train.py --config ${SLURM_SUBMIT_DIR}/src/diffusion_brain/configs/brain/config_train.yaml --jobid ann-brain-cluster-${SLURM_JOB_ID}"
 
 
 echo "‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾"
