@@ -56,7 +56,7 @@ def get_ann_brain_dataloader(args):
     ensure_activations_exist(train_activations_path, train_nsd_ids, args)
     ensure_activations_exist(test_activations_path, test_nsd_ids, args)
 
-    # 5. Create dataset
+    # 5. Create dataset (train first, then pass its stats to test to avoid data leakage)
     train_dataset = PairedBrainAnnDataset(
         activations_path=train_activations_path,
         fmri_roi_path=fmri_roi_path,
@@ -69,6 +69,9 @@ def get_ann_brain_dataloader(args):
         fmri_roi_path=fmri_roi_path,
         sample_indices=test_indices,
         is_2d=args.data.is_2d,
+        act_mean=train_dataset.act_mean,
+        act_std=train_dataset.act_std,
+        fmri_scale=getattr(train_dataset, 'fmri_scale', None),
     )
     
     # 6. DataLoader

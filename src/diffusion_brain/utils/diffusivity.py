@@ -101,6 +101,7 @@ def run_forward_sde(process: StandardDiffusion,
     #Initialize list of trajectory:
     x_traj = [x_0]
     #print("time grid ", time_grid)
+
     for idx, t in enumerate(time_grid):
         #Get last location and time
         x = x_traj[idx]
@@ -124,7 +125,7 @@ def run_forward_sde(process: StandardDiffusion,
 def run_reverse_sde(diffusion_process: StandardDiffusion,
             x_0: torch.Tensor,
             score_fn: Callable,
-            T: float = 1.0, 
+            T: float = 1.0,
             n_steps: int = 1000,
             epsilon=1e-3,
             guidance_scale: float = 1.0,
@@ -133,6 +134,7 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
             cond: torch.Tensor = None,
             device="cpu",
             args=None,
+            ann_tokenizer=None,
             **kwargs
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Function to run reverse-time stochastic differential equation. We assume a deterministic initial Gaussian distribution p_T."""
@@ -173,31 +175,63 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
         #         score = score_fn(x, t, y_target) / torch.sqrt(diffusion_process.var(t))
         # else:
         # for mnist and ann-brain with UNet2DConditionModel:
+
+        debug_conditioning = bool(getattr(args.validation, "debug_conditioning", True)) if args is not None else False
+
         if args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
 
             #######################
-            time_unet = t * 999
+            time_unet = t * 999 # was no casting
             #######################
             
-            cond_seq_len = getattr(args.model, "cond_seq_len", 4)
-            
-            # For ann-brain: use actual conditioning via cross-attention
+            cond_token_mode = getattr(args.model, "cond_token_mode", "learned")
+
+            def _to_cond_tokens(c):
+                """Tokenize ANN vector for cross-attention (mirrors train.py logic)."""
+                if ann_tokenizer is not None:
+                    return ann_tokenizer(c.float())
+                cond_seq_len = max(1, int(getattr(args.model, "cond_seq_len", 1)))
+                if cond_token_mode == "chunk" and cond_seq_len > 1 and c.shape[1] % cond_seq_len == 0:
+                    return c.reshape(c.shape[0], cond_seq_len, -1).float()
+                return c.unsqueeze(1).expand(-1, cond_seq_len, -1).float()
+
+            # For ann-brain: ANN conditioning goes exclusively through cross-attention
             if cond is not None:
-                # cond shape: (batch, cond_dim) -> (batch, seq_len, cond_dim)
-                encoder_hidden_states_cond = cond.unsqueeze(1).expand(-1, cond_seq_len, -1).float()
+                encoder_hidden_states_cond = _to_cond_tokens(cond)
                 encoder_hidden_states_uncond = torch.zeros_like(encoder_hidden_states_cond)
-                
+
+                # class_labels is None — time-embedding slot reserved for subject identity
                 score_uncond = score_fn(x, time_unet, encoder_hidden_states=encoder_hidden_states_uncond, class_labels=None).sample
                 score_cond = score_fn(x, time_unet, encoder_hidden_states=encoder_hidden_states_cond, class_labels=None).sample
+
+                if debug_conditioning and idx == 0:
+                    delta = (score_cond - score_uncond).abs().mean().item()
+                    rel_delta = delta / (score_cond.abs().mean().item() + 1e-8)
+
+                    if cond.shape[0] > 1:
+                        perm = torch.randperm(cond.shape[0], device=cond.device)
+                        encoder_hidden_states_shuf = _to_cond_tokens(cond[perm])
+                        score_shuf = score_fn(x, time_unet, encoder_hidden_states=encoder_hidden_states_shuf, class_labels=None).sample
+                        delta_shuf = (score_cond - score_shuf).abs().mean().item()
+                        print(
+                            f"[conditioning-check] unet2d step0: Δ(cond-uncond)={delta:.3e}, "
+                            f"rel={rel_delta:.3e}, Δ(cond-shuffled)={delta_shuf:.3e}",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"[conditioning-check] unet2d step0: Δ(cond-uncond)={delta:.3e}, rel={rel_delta:.3e}",
+                            flush=True,
+                        )
             else:
-                # For mnist: use class_labels (discrete)
-                encoder_hidden_states = torch.zeros(x.shape[0], cond_seq_len, args.model.cross_attention_dim, device=x.device)
+                # For mnist: use class_labels (discrete), cross-attention gets zeros
+                encoder_hidden_states = torch.zeros(x.shape[0], 1, args.model.cross_attention_dim, device=x.device)
                 score_uncond = score_fn(x, time_unet, encoder_hidden_states=encoder_hidden_states, class_labels=y_empty).sample
                 score_cond = score_fn(x, time_unet, encoder_hidden_states=encoder_hidden_states, class_labels=y_target).sample
         # for ann-brain case with continuous conditioning vector:
         elif args.model.name == "gfdm-unet-1d-cond" or args.model.name == "dit":
             #######################
-            time_unet = t * 999
+            time_unet = t * 999 # was no casting
             #######################
 
             if cond is None:
@@ -205,6 +239,25 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
             cond_uncond = torch.zeros_like(cond).to(device)
             score_uncond = score_fn(x, time_unet, cond_uncond)
             score_cond = score_fn(x, time_unet, cond)
+
+            if debug_conditioning and idx == 0:
+                delta = (score_cond - score_uncond).abs().mean().item()
+                rel_delta = delta / (score_cond.abs().mean().item() + 1e-8)
+
+                if cond.shape[0] > 1:
+                    perm = torch.randperm(cond.shape[0], device=cond.device)
+                    score_shuf = score_fn(x, time_unet, cond[perm])
+                    delta_shuf = (score_cond - score_shuf).abs().mean().item()
+                    print(
+                        f"[conditioning-check] {args.model.name} step0: Δ(cond-uncond)={delta:.3e}, "
+                        f"rel={rel_delta:.3e}, Δ(cond-shuffled)={delta_shuf:.3e}",
+                        flush=True,
+                    )
+                else:
+                    print(
+                        f"[conditioning-check] {args.model.name} step0: Δ(cond-uncond)={delta:.3e}, rel={rel_delta:.3e}",
+                        flush=True,
+                    )
         else:
             print("shape of x and t are: ", x.shape, t.shape, flush=True)
             score_uncond = score_fn(x, t, y_empty)
@@ -212,15 +265,16 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
         
         score = ((1 - guidance_scale) * score_uncond + guidance_scale * score_cond) / torch.sqrt(diffusion_process.var(t))
 
-        # DEBUG: Check if scores differ by label#################################
-        # if idx == 0:  # Only at first timestep
-        #     diff_norm = (score_cond - score_uncond).norm()
-        #     print(f"t={t.item():.3f} | label={y_target[0].item()} | "
-        #         f"score_cond norm={score_cond.norm():.4f} | "
-        #         f"score_uncond norm={score_uncond.norm():.4f} | "
-        #         f"difference norm={diff_norm:.4f}")
-        ##################################################################
-            
+        
+        ############### DEBUG: Check if scores differ by label#################################
+        if debug_conditioning:  # Only at first timestep
+            diff_norm = (score_cond - score_uncond).norm()
+            print(f"t={time_unet.item():.3f} | label={y_target[0].item()} | "
+                f"score_cond norm={score_cond.norm():.4f} | "
+                f"score_uncond norm={score_uncond.norm():.4f} | "
+                f"difference norm={diff_norm:.4f}")
+        #################################################################
+
         # print("x shape ", x.shape)
         # print("t shape ", t.shape)
         # print("score shape ", score.shape)
@@ -244,7 +298,8 @@ def generate_samples(num_samples: int,
                      diffusion_process: StandardDiffusion,
                      args,
                      device,
-                     cond: torch.Tensor = None):
+                     cond: torch.Tensor = None,
+                     ann_tokenizer=None):
     """Function to generate samples from the learned diffusion model"""
     # initial samples from p_T
     raw_model = _unwrap_model(model)
@@ -278,7 +333,7 @@ def generate_samples(num_samples: int,
     # print("in generate_samples noise shape is {}".format(noise.shape), flush=True)
     # print("in generate_samples mu and std shapes:", mu.shape, std.shape, flush=True)
     
-    x_T = std * noise # + mu
+    x_T = std * noise # + mu # mean was commented out 
     # was _, x_0 as we had also trajectory tracked, but no need for that for the sake of generation speed
     x_0 = run_reverse_sde(
         diffusion_process=diffusion_process,
@@ -292,7 +347,8 @@ def generate_samples(num_samples: int,
         cond=cond,
         score_scaling=True,
         device=device,
-        args=args
+        args=args,
+        ann_tokenizer=ann_tokenizer,
     )
 
     if args.model.name == "gfdm-unet-1d-cond":

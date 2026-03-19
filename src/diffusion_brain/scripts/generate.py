@@ -7,9 +7,10 @@ import numpy as np
 from diffusion_brain.utils.diffusivity import generate_samples, get_diffusion
 from diffusion_brain.utils.setup import parse_args_and_setup_wandb
 from diffusion_brain.utils.visualise import visualise_and_save_results, pyplot_brain
-from diffusion_brain.models import set_model
+from diffusion_brain.models import set_model, ANNTokenizer
 from diffusion_brain.models.autoencoder import LinearAutoencoder, get_linear_autoencoder
 from diffusion_brain.data_utils import get_dataloader
+from diffusion_brain.utils.fmri_behav_data_utils import signal_to_2d
 
 _STEP_TAG_RE = re.compile(r"step_(\d+)")
 
@@ -35,6 +36,8 @@ def _model_file_sort_key(filename):
     name = str(filename)
     if "final" in name.lower():
         return (2, float("inf"), name)
+    if "best" in name.lower():
+        return (3, float("inf"), name)
     match = _STEP_TAG_RE.search(name)
     if match:
         return (0, int(match.group(1)), name)
@@ -68,6 +71,8 @@ def generate_sample_loop_toy(args):
         print(f"Testing the model at step {args.model.which}")
         if str(args.model.which).lower() == "final":
             model_files = ["model_final.pth"]
+        elif str(args.model.which).lower() == "best":
+            model_files = ["model_best.pth"]
         else:
             model_files = [f"model_step_{args.model.which}.pth"]    
 
@@ -88,7 +93,7 @@ def generate_sample_loop_toy(args):
         print("min value of generated samples: ", generated_samples_one_model.min().item())
 
         filename = os.path.basename(model_path)
-        match = re.search(r"(step_\d+|final)", filename)
+        match = re.search(r"(step_\d+|final|best)", filename)
         tag = match.group(1) if match else filename
         generated_samples[f"{tag}"] = generated_samples_one_model
 
@@ -100,7 +105,30 @@ def generate_sample_loop(args):
     _, gen_dataloader = get_dataloader(args)
     input_size, cross_attention_dim = _infer_model_dims_from_dataloader(gen_dataloader)
     args.model.input_size = tuple(input_size) # was int(input_size)
-    args.model.cross_attention_dim = int(cross_attention_dim)
+    
+    # Apply the same conditioning tokenization as in training
+    ann_dim = int(cross_attention_dim)
+    args.model.ann_dim = ann_dim
+    cond_token_mode = getattr(args.model, "cond_token_mode", "learned")
+    num_tokens = max(1, int(getattr(args.model, "cond_seq_len", 8)))
+    token_dim = int(getattr(args.model, "token_dim", 256))
+
+    if cond_token_mode == "learned":
+        args.model.cross_attention_dim = token_dim
+        print(
+            f"Condition tokenization: LEARNED | ANN dim {ann_dim} -> "
+            f"ANNTokenizer({num_tokens} tokens x {token_dim}-dim), "
+            f"cross_attention_dim={token_dim}",
+            flush=True,
+        )
+    else:
+        cond_seq_len = num_tokens
+        if cond_token_mode == "chunk" and cond_seq_len > 1 and ann_dim % cond_seq_len == 0:
+            args.model.cross_attention_dim = ann_dim // cond_seq_len
+            print(f"Condition tokenization: chunk | ANN dim {ann_dim} -> seq_len {cond_seq_len} x token_dim {args.model.cross_attention_dim}", flush=True)
+        else:
+            args.model.cross_attention_dim = ann_dim
+            print(f"Condition tokenization: repeat | seq_len {cond_seq_len}, token_dim {args.model.cross_attention_dim}", flush=True)
 
     args.model.input_folder = args.model.input_folder + "-" + str(args.model.run_id) 
 
@@ -119,14 +147,24 @@ def generate_sample_loop(args):
         for step in args.model.which:
             if str(step).lower() == "final":
                 model_files.append("model_final.pth")
+            elif str(step).lower() == "best":
+                model_files.append("model_best.pth")    
             else:
                 model_files.append(f"model_step_{step}.pth")
     else:
         print(f"Testing the model at step {args.model.which}")
         if str(args.model.which).lower() == "final":
             model_files = ["model_final.pth"]
+        elif str(args.model.which).lower() == "best":
+            model_files = ["model_best.pth"]    
         else:
             model_files = [f"model_step_{args.model.which}.pth"]
+
+    # Create ANNTokenizer if using learned conditioning
+    ann_tokenizer = None
+    if cond_token_mode == "learned" and args.model.name == "unet-diffusers":
+        ann_tokenizer = ANNTokenizer(ann_dim=ann_dim, num_tokens=num_tokens, token_dim=token_dim).to(DEVICE)
+        print(f"ANNTokenizer created for generation: {ann_dim} -> {num_tokens} tokens x {token_dim}-dim")
 
     for model_file in model_files:
         print("Setting up the model: ", model_file)
@@ -137,8 +175,18 @@ def generate_sample_loop(args):
         if 'state_dict' in checkpoint:
             model.load_state_dict(checkpoint['state_dict'])
         else:
-            # Sometimes the checkpoint IS the state_dict itself
             model.load_state_dict(checkpoint)
+
+        # Load matching ANNTokenizer checkpoint
+        if ann_tokenizer is not None:
+            tokenizer_file = model_file.replace("model_", "ann_tokenizer_")
+            tokenizer_path = os.path.join(args.model.input_folder, tokenizer_file)
+            if os.path.isfile(tokenizer_path):
+                ann_tokenizer.load_state_dict(torch.load(tokenizer_path, map_location=DEVICE))
+                print(f"Loaded ANNTokenizer from {tokenizer_path}")
+            else:
+                print(f"WARNING: ANNTokenizer checkpoint not found at {tokenizer_path}")
+            ann_tokenizer.eval()
 
         model.eval()  # set to eval mode for generation
         print("model device: ", next(model.parameters()).device)
@@ -155,7 +203,7 @@ def generate_sample_loop(args):
             
             generated_samples_one_model_one_cond = []
             for _ in range(args.validation.average_over_num_runs):
-                generated_samples_one_model_one_cond_one_time = generate_samples(args.validation.batch_size, model, diffusion_process, args, cond=cond, device=DEVICE) 
+                generated_samples_one_model_one_cond_one_time = generate_samples(args.validation.batch_size, model, diffusion_process, args, cond=cond, device=DEVICE, ann_tokenizer=ann_tokenizer)
                 generated_samples_one_model_one_cond.append(generated_samples_one_model_one_cond_one_time)
             generated_samples_one_model_one_cond = torch.stack(generated_samples_one_model_one_cond, dim=0).mean(dim=0) # averaging across repetitions of the same generation, conditioned on the same ANN signal
 
@@ -185,7 +233,7 @@ def generate_sample_loop(args):
         print("Shape of true fMRI after concatenating batches: ", true_fmri_concat.shape, flush=True)
 
         filename = os.path.basename(model_path)
-        match = re.search(r"(step_\d+|final)", filename)
+        match = re.search(r"(step_\d+|final|best)", filename)
         tag = match.group(1) if match else filename
         generated_samples[f"{tag}"] = generated_samples_one_model
         true_fmri_per_model[f"{tag}"] = true_fmri_concat
@@ -194,6 +242,8 @@ def generate_sample_loop(args):
 
 def main(): 
     args = parse_args_and_setup_wandb()
+    print("ARGS: ", args)
+    
     wandb.define_metric("model_step")
     wandb.define_metric("*", step_metric="model_step")
     if args.data.data_name == "ann-brain":
@@ -211,6 +261,17 @@ def main():
                 args=args,
                 step_num=step_num,
             )
+
+            if args.data.is_2d:
+                wandb.log({f"true_fmri_data_model_{model_name}": [wandb.Image(true_fmri[i].cpu() * 255) for i in range(min(3, true_fmri.shape[0]))],
+                           f"generated_data_model_{model_name}": [wandb.Image(generated_samples_per_model[i].cpu() * 255) for i in range(min(3, generated_samples_per_model.shape[0]))]})
+            else:
+                # I want to see non-interpolated on pycortex flatmap images!
+                one_generated_sample_2d, _ = signal_to_2d(args, one_signal_to_transform=generated_samples_per_model[0])
+                one_fmri_signal_2d, _ = signal_to_2d(args, one_signal_to_transform=generated_samples_per_model[0])
+                wandb.log({f"true_fmri_data_model_{model_name}": wandb.Image(one_fmri_signal_2d * 255),
+                           f"generated_data_model_{model_name}": wandb.Image(one_generated_sample_2d * 255)})
+
             # no f-string in the name as i want to have all the models in the slide bar in wandb
             #pyplot_brain(generated_samples_per_model.mean(axis=0), args=args, savename=f"generated_samples_mean", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png', step_num=step_num)
     else:

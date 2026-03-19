@@ -15,7 +15,7 @@ def _attach_model_step(payload, step_num):
     return data
 
 
-def visualise_and_save_results(generated_samples, true_fmri, step, args, step_num=None, **kwargs):
+def visualise_and_save_results(generated_samples, step, args, step_num=None, **kwargs):
     # Use kwargs for additional arguments
     if args.data.data_name == "toy":
         generated_samples = generated_samples.cpu().numpy()
@@ -47,9 +47,9 @@ def visualise_and_save_results(generated_samples, true_fmri, step, args, step_nu
 
         # plot r correlation
         if args.data.is_2d:
-            r_scores_across_batch_images = get_r_across_images_2d_data(args, generated_samples, true_fmri, step_num=step_num)
+            r_scores_across_batch_images = get_r_across_images_2d_data(args, generated_samples, kwargs.get('true_fmri'), step_num=step_num)
         else:
-            r_scores_across_batch_images = get_r_across_images_1d_data(args, generated_samples, true_fmri, step_num=step_num)
+            r_scores_across_batch_images = get_r_across_images_1d_data(args, generated_samples, kwargs.get('true_fmri'), step_num=step_num)
             pyplot_brain(r_scores_across_batch_images, args=args, savename=f"r_scores_across_batch_images_step", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png', step_num=step_num)
             r_scores_across_batch_images = np.mean(r_scores_across_batch_images)
             

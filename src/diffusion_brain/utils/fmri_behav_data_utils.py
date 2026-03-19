@@ -260,7 +260,7 @@ def compute_rdm(data, args, regime="train", method='correlation'):
     return rdm
 
 ########################## 1D -> 2D utils ##########################
-def signal_to_2d(args):
+def signal_to_2d(args, **kwargs):
     grid_size = getattr(args.data, "grid_size_2d", None)
     grid_resolution = getattr(args.data, "grid_resolution_2d", 1.0)
 
@@ -268,7 +268,12 @@ def signal_to_2d(args):
     pts_right, _ = cortex.db.get_surf("fsaverage", "flat", hemisphere="right")
 
     roi_indices = np.load(os.path.join(args.data.roi_defs_dir, f"roi_indices", f"{args.data.roi_file}", f"{args.data.roi}.npy"))
-    data_roi = torch.load(os.path.join(args.data.roi_defs_dir, f"roi_preselected", f"{args.data.roi_file}", f"{args.data.subj}_{args.data.roi}.pt")).cpu().numpy()
+    
+    # if we work with one signal or if we transform the whole dataset:
+    if kwargs.get("one_signal_to_transform"):
+        data_roi = kwargs["one_signal_to_transform"]
+    else:    
+        data_roi = torch.load(os.path.join(args.data.roi_defs_dir, f"roi_preselected", f"{args.data.roi_file}", f"{args.data.subj}_{args.data.roi}.pt")).cpu().numpy()
 
     pts_general = np.concatenate([pts_left[:,:2], pts_right[:,:2]], axis=0)
     pts_roi = pts_general[roi_indices]
@@ -292,25 +297,170 @@ def signal_to_2d(args):
     print(f"Grid size: {grid_size}x{grid_size}, Total points: {len(pts_roi)}, Unique grid points: {len(set(zip(x_grid, y_grid)))}")
     data_roi_2d = []
 
-    
     for sample in range(data_roi.shape[0]):
         values = data_roi[sample] #10k values for each sample
         # Create matrix
-        matrix_2d = np.full((grid_size, grid_size), np.nan, dtype=np.float32)
+        matrix_2d = np.full((grid_size, grid_size), 0, dtype=np.float32)
 
         matrix_2d[y_grid, x_grid] = values
 
         # Remove vertical NaN bands between hemispheres by cropping rows with all NaN
-        valid_rows = ~np.all(np.isnan(matrix_2d), axis=0)
+        valid_rows = ~np.all(matrix_2d == 0, axis=0)
         if valid_rows.any():
             matrix_2d = matrix_2d[:, valid_rows]
 
         data_roi_2d.append(matrix_2d)
 
-    locations_roi = np.where(data_roi_2d[0] != np.nan)
+    locations_roi = np.where(data_roi_2d[0] != 0)
 
     return np.array(data_roi_2d)[:, None, :, :], locations_roi
 
+def get_roi_flatmap_crops_compact(roi_names, subject='fsaverage', height=1024, padding=5, combined=True):
+    """
+    Pre-compute tight 2D flatmap crops for each ROI, one per hemisphere.
+    Removes unnecessary NaN padding between hemispheres.
+    """
+    roi_indices = np.load("/home/belova/Desktop/diffusion_brain_alignment/src/diffusion_brain/data/roi_defs/roi_indices/streams/5.npy")
+    roi_dict = {"5": roi_indices}
+
+    n_total = cortex.db.get_surf(subject, 'flat', hemisphere='left')[0].shape[0] + \
+              cortex.db.get_surf(subject, 'flat', hemisphere='right')[0].shape[0]
+
+    # Get vertex-to-pixel mapping
+    dummy = cortex.Vertex(np.arange(n_total, dtype=np.float32), subject=subject)
+    im, _ = cortex.quickflat.make_flatmap_image(dummy, height=height)
+    vertex_map = im[:, :, 0] if im.ndim == 3 else im
+    
+    n_left = cortex.db.get_surf(subject, 'flat', hemisphere='left')[0].shape[0]
+    W_full = vertex_map.shape[1]
+    lh_region = (0, W_full // 2)
+    rh_region = (W_full // 2, W_full)
+
+    crops = {}
+    meta = {}
+
+    for roi in roi_names:
+        roi_verts = set(roi_dict[roi].astype(int))
+        roi_pixel_mask = np.zeros(vertex_map.shape, dtype=bool)
+        valid_pixels = ~np.isnan(vertex_map)
+        flat_indices = vertex_map[valid_pixels].astype(int)
+        belongs = np.array([v in roi_verts for v in flat_indices])
+        temp_mask = np.zeros(vertex_map.shape, dtype=bool)
+        temp_mask[valid_pixels] = belongs
+        roi_pixel_mask = temp_mask
+
+        crops[roi] = {}
+        meta[roi] = {}
+
+        for hemi, (c_start, c_end) in [('lh', lh_region), ('rh', rh_region)]:
+            hemi_mask = roi_pixel_mask.copy()
+            hemi_mask[:, :c_start] = False
+            hemi_mask[:, c_end:] = False
+
+            rows = np.where(hemi_mask.any(axis=1))[0]
+            cols = np.where(hemi_mask.any(axis=0))[0]
+
+            if len(rows) == 0 or len(cols) == 0:
+                crops[roi][hemi] = None
+                meta[roi][hemi] = None
+                continue
+
+            r0 = max(0, rows.min() - padding)
+            r1 = min(vertex_map.shape[0], rows.max() + padding + 1)
+            c0 = max(c_start, cols.min() - padding)
+            c1 = min(c_end, cols.max() + padding + 1)
+
+            bbox = (r0, r1, c0, c1)
+            crops[roi][hemi] = np.array(bbox)
+            meta[roi][hemi] = {
+                'bbox': bbox,
+                'mask': hemi_mask[r0:r1, c0:c1],
+                'vertex_map_crop': vertex_map[r0:r1, c0:c1],
+                'hemi': hemi
+            }
+
+    if combined:
+        lh_bbox = meta[roi]['lh']['bbox']
+        rh_bbox = meta[roi]['rh']['bbox']
+        gap = 2
+        meta[roi]['combined_info'] = {
+            'lh_bbox': lh_bbox,
+            'rh_bbox': rh_bbox,
+            'gap': gap
+        }
+
+    return crops, meta, vertex_map, n_left
+
+
+def signal_to_flatmap_crop_compact(signal_1d, subject, roi, meta, vertex_map, combined=True):
+    """Forward: 1D fsaverage signal → compact 2D flatmap (minimal padding)."""
+    if signal_1d.shape[0] != 327684:
+        raise ValueError(f"Signal length {signal_1d.shape[0]} != 327684")
+    
+    vertex_data = cortex.Vertex(signal_1d.astype(np.float32), subject=subject)
+    im, _ = cortex.quickflat.make_flatmap_image(vertex_data)
+    flatmap = im[:, :, 0] if im.ndim == 3 else im
+
+    if combined:
+        lh_bbox = meta[roi]['lh']['bbox']
+        rh_bbox = meta[roi]['rh']['bbox']
+        gap = meta[roi]['combined_info']['gap']
+        
+        r0_lh, r1_lh, c0_lh, c1_lh = lh_bbox
+        r0_rh, r1_rh, c0_rh, c1_rh = rh_bbox
+        
+        lh_crop = flatmap[r0_lh:r1_lh, c0_lh:c1_lh]
+        rh_crop = flatmap[r0_rh:r1_rh, c0_rh:c1_rh]
+        
+        h_max = max(lh_crop.shape[0], rh_crop.shape[0])
+        
+        lh_padded = np.full((h_max, lh_crop.shape[1]), np.nan, dtype=np.float32)
+        rh_padded = np.full((h_max, rh_crop.shape[1]), np.nan, dtype=np.float32)
+        
+        lh_padded[:lh_crop.shape[0]] = lh_crop
+        rh_padded[:rh_crop.shape[0]] = rh_crop
+        
+        gap_array = np.full((h_max, gap), np.nan, dtype=np.float32)
+        
+        result = np.concatenate([lh_padded, gap_array, rh_padded], axis=1)
+        return result.astype(np.float32)
+
+
+def flatmap_crop_compact_to_signal_1d(crop_2d, subject, roi, meta, combined=True):
+    """Inverse: compact 2D flatmap → 1D fsaverage signal (lossless)."""
+    signal_1d = np.zeros(327684, dtype=np.float32)
+    
+    if combined:
+        lh_bbox = meta[roi]['lh']['bbox']
+        rh_bbox = meta[roi]['rh']['bbox']
+        gap = meta[roi]['combined_info']['gap']
+        
+        r0_lh, r1_lh, c0_lh, c1_lh = lh_bbox
+        r0_rh, r1_rh, c0_rh, c1_rh = rh_bbox
+        
+        lh_height = r1_lh - r0_lh
+        lh_width = c1_lh - c0_lh
+        rh_width = c1_rh - c0_rh
+        
+        lh_crop = crop_2d[:lh_height, :lh_width]
+        rh_start_col = lh_width + gap
+        rh_crop = crop_2d[:, rh_start_col:rh_start_col + rh_width]
+        
+        # Reconstruct LH
+        vertex_map_lh = meta[roi]['lh']['vertex_map_crop']
+        valid_pixels = ~np.isnan(vertex_map_lh)
+        flat_vertices = vertex_map_lh[valid_pixels].astype(int)
+        flat_values = lh_crop[valid_pixels]
+        signal_1d[flat_vertices] = flat_values
+        
+        # Reconstruct RH
+        vertex_map_rh = meta[roi]['rh']['vertex_map_crop']
+        valid_pixels = ~np.isnan(vertex_map_rh)
+        flat_vertices = vertex_map_rh[valid_pixels].astype(int)
+        flat_values = rh_crop[valid_pixels]
+        signal_1d[flat_vertices] = flat_values
+    
+    return signal_1d
 
 # def compute_grid_no_collisions(xy_roi):
 #     """Map ROI vertices to 2D grid without collisions."""
