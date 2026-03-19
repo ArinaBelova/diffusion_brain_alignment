@@ -410,7 +410,14 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
         
         predicted_score = score_fn(x_t, t, encoder_hidden_states = encoder_hidden_states, class_labels=class_labels_arg).sample
     elif args.model.name == "gfdm-unet-1d-cond":
-        predicted_score = score_fn(x_t, t, masked_labels.float())
+        # Tokenize ANN conditioning for cross-attention, same as 2D model
+        if args.data.data_name == "ann-brain":
+            encoder_hidden_states = to_cond_tokens(masked_labels)
+            # GFDM UNet expects encoder_out as (B, C, T) — channels first
+            encoder_out = encoder_hidden_states.permute(0, 2, 1)
+            predicted_score = score_fn(x_t, t, encoder_out=encoder_out)
+        else:
+            predicted_score = score_fn(x_t, t, masked_labels.float())
     else:
         predicted_score = score_fn(x_t, t, masked_labels)
 
@@ -457,7 +464,41 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
     cond_diagnostics = {}
     if step % 100 == 0:
         with torch.no_grad():
-            if args.data.data_name == "ann-brain" and args.model.name in ["unet-diffusers", "unet-diffusers-1d"] and label.shape[0] > 1:
+            if args.data.data_name == "ann-brain" and args.model.name == "gfdm-unet-1d-cond" and label.shape[0] > 1 and ann_tokenizer is not None:
+                # 1D cross-attention conditioning diagnostics
+                cond_tokens = to_cond_tokens(label.float())
+                uncond_tokens = torch.zeros_like(cond_tokens)
+                perm = torch.randperm(label.shape[0], device=label.device)
+                shuffled_tokens = to_cond_tokens(label[perm].float())
+
+                with torch.autocast(device_type="cuda", enabled=False):
+                    x_t_f32 = x_t.float()
+                    cond_out = cond_tokens.float().permute(0, 2, 1)
+                    uncond_out = uncond_tokens.float().permute(0, 2, 1)
+                    shuf_out = shuffled_tokens.float().permute(0, 2, 1)
+
+                    cond_pred = score_fn(x_t_f32, t, encoder_out=cond_out)
+                    shuffled_pred = score_fn(x_t_f32, t, encoder_out=shuf_out)
+                    uncond_pred = score_fn(x_t_f32, t, encoder_out=uncond_out)
+
+                if orig_len is not None:
+                    cond_pred = cond_pred[..., :orig_len]
+                    uncond_pred = uncond_pred[..., :orig_len]
+                    shuffled_pred = shuffled_pred[..., :orig_len]
+
+                sep_cond_uncond = F.l1_loss(cond_pred, uncond_pred, reduction="mean").item()
+                sep_cond_shuffled = F.l1_loss(cond_pred, shuffled_pred, reduction="mean").item()
+                sep_uncond_shuffled = F.l1_loss(uncond_pred, shuffled_pred, reduction="mean").item()
+
+                cond_diagnostics.update({
+                    "sep_cond_uncond": sep_cond_uncond,
+                    "sep_cond_shuffled": sep_cond_shuffled,
+                    "sep_uncond_shuffled": sep_uncond_shuffled,
+                    "cond_pred_norm": float(torch.norm(cond_pred).item()),
+                    "uncond_pred_norm": float(torch.norm(uncond_pred).item()),
+                    "shuffled_pred_norm": float(torch.norm(shuffled_pred).item()),
+                })
+            elif args.data.data_name == "ann-brain" and args.model.name in ["unet-diffusers", "unet-diffusers-1d"] and label.shape[0] > 1:
                 # Compute predictions with different conditioning inputs (ann-brain uses continuous labels)
                 cond_tokens = to_cond_tokens(label.float())
                 uncond_tokens = torch.zeros_like(cond_tokens)
@@ -879,7 +920,7 @@ def train(args):
     # Create ANNTokenizer for learned conditioning (replaces manual chunk/repeat)
     ann_tokenizer = None
     cond_token_mode = getattr(args.model, "cond_token_mode", "learned")
-    if args.data.data_name == "ann-brain" and args.model.name == "unet-diffusers" and cond_token_mode == "learned":
+    if args.data.data_name == "ann-brain" and args.model.name in ["unet-diffusers", "gfdm-unet-1d-cond"] and cond_token_mode == "learned":
         ann_dim = args.model.ann_dim
         num_tokens = max(1, int(getattr(args.model, "cond_seq_len", 8)))
         token_dim = int(getattr(args.model, "token_dim", 256))
@@ -1011,9 +1052,6 @@ def train(args):
                         cond=cond,
                         ann_tokenizer=ann_tokenizer,
                     )
-
-                    wandb.log({"generated_data": [wandb.Image(generated_samples[i].cpu() * 255) for i in range(min(3, generated_samples.shape[0]))],
-                                "true_fmri_data": [wandb.Image(true_fmri[i].cpu() * 255) for i in range(min(3, true_fmri.shape[0]))]})  
 
                     if autoencoder is not None:
                         z = generated_samples.squeeze(1)

@@ -171,7 +171,9 @@ def get_r_across_images_2d_data(args, generated_data_roi_2d, true_fmri, step_num
         assert len(true_fmri_by_voxel) == len(generated_sample)
         r_scores_across_voxels[image_idx] = scipy.stats.pearsonr(true_fmri_by_voxel, generated_sample)[0]
 
-    r_payload = _attach_model_step({"r_image": wandb.Image(fig),
+    r_payload = _attach_model_step({"generated_data": [wandb.Image(generated_data_roi_2d[i].cpu() * 255) for i in range(min(3, generated_data_roi_2d.shape[0]))],
+                                    "true_fmri_data": [wandb.Image(true_fmri[i].cpu() * 255) for i in range(min(3, true_fmri.shape[0]))],
+                                    "r_image": wandb.Image(fig),
                                     "mean_r_scores_across_voxels": np.mean(r_scores_across_voxels),
                                     "mean_r_scores_across_batch_images": np.mean(r_scores_across_batch_images)}, step_num)
     wandb.log(r_payload)

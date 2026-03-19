@@ -21,6 +21,8 @@ diffusion:
 data:
   data_name: mnist
   data_root: './data'
+  resize_to_multiple: 16 # for 2d case, pad the images to be divisible by this number to ensure compatibility with UNet downsampling/upsampling; should be power of 2 (e.g., 16, 32, 64) depending on the number of stages in UNet
+
 
 # need to wire up the model arguments' with UNet class definition
 model:
@@ -51,7 +53,7 @@ optim:
   # patience: 50
 
 train:
-  steps: 10000 #2000
+  steps: 1000 # 10000
   image_size: 32
   batch_size: 128
   dataset_size: 60000
@@ -68,6 +70,7 @@ validation:
   eval_freq: 100
   batch_size: 64 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
   n_steps: 1000
-  guidance_scale: 0.0 #0.8
+  guidance_scale: 5.0 #0.8
   label_to_generate: 5
   output_folder: './outputs/mnist/'
+  debug_conditioning: true

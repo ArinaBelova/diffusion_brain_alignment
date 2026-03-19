@@ -10,8 +10,10 @@ from diffusion_brain.models.gfdm_models.unet import GFDM_UNetModel
 
 class GFDM_UNet1DConditional(GFDM_UNetModel):
     """
-    1D UNet with continuous conditioning.
-    Conditioning is injected into the timestep embedding via a learned projection.
+    1D UNet with dual conditioning:
+      - ANN activations → cross-attention via encoder_out (tokenised externally
+        by ANNTokenizer, same as the 2D model).
+      - Time embedding slot kept free for future subject-identity conditioning.
     """
 
     def __init__(
@@ -21,7 +23,7 @@ class GFDM_UNet1DConditional(GFDM_UNetModel):
         out_channels,
         num_res_blocks,
         attention_resolutions,
-        cond_dim,
+        encoder_channels=None,
         dropout=0,
         channel_mult=(1, 2, 4, 8),
         conv_resample=True,
@@ -53,43 +55,29 @@ class GFDM_UNet1DConditional(GFDM_UNetModel):
             use_scale_shift_norm=use_scale_shift_norm,
             resblock_updown=resblock_updown,
             use_new_attention_order=use_new_attention_order,
+            encoder_channels=encoder_channels,
         )
 
-        time_embed_dim = self.model_channels * 4
-
-        # so we can add the cond embedding to time embedding
-        self.cond_proj = nn.Sequential(
-            nn.SiLU(),
-            linear(cond_dim, time_embed_dim),
-        )
-        
-        self.cond_dim = cond_dim
         self.downsample_factor = 2 ** (len(channel_mult) - 1)
 
-        if len(attention_resolutions) == 0:
-            # Disable the always-on middle attention block for 1D long sequences.
-            self.middle_block[1] = nn.Identity()
-
-    def forward(self, x, timesteps, cond=None):
+    def forward(self, x, timesteps, encoder_out=None):
         """
-        :param x: [N, C, L]
+        :param x: [N, C, L] — 1D brain signal
         :param timesteps: [N]
-        :param cond: [N, cond_dim] or None
+        :param encoder_out: [N, encoder_channels, num_tokens] — tokenised ANN
+            activations for cross-attention (produced by ANNTokenizer, then
+            transposed to channels-first). None means unconditional.
         """
-        if cond is None:
-            cond = th.zeros(x.shape[0], self.cond_dim, device=x.device, dtype=x.dtype)
-
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
-        emb = emb + self.cond_proj(cond)
 
         hs = []
         h = x.type(self.dtype)
         for module in self.input_blocks:
-            h = module(h, emb)
+            h = module(h, emb, encoder_out=encoder_out)
             hs.append(h)
-        h = self.middle_block(h, emb)
+        h = self.middle_block(h, emb, encoder_out=encoder_out)
         for module in self.output_blocks:
             h = th.cat([h, hs.pop()], dim=1)
-            h = module(h, emb)
+            h = module(h, emb, encoder_out=encoder_out)
         h = h.type(x.dtype)
         return self.out(h)

@@ -164,14 +164,17 @@ def set_model(args):
             dropout=0, # resnet dropout prob, not classifier-free dropout
         )
     elif args.model.name == "gfdm-unet-1d-cond":
-        print("Setting GFDM UNet 1D conditional model")
+        print("Setting GFDM UNet 1D conditional model with cross-attention")
+        # ANN conditioning goes through cross-attention (via ANNTokenizer),
+        # same as the 2D model. Time-embedding slot is free for subject identity.
+        encoder_channels = getattr(args.model, "cross_attention_dim", 256)
         model = GFDM_UNet1DConditional(
             in_channels=args.model.c_in,
             model_channels=64,
             out_channels=args.model.c_out,
             num_res_blocks=3,
-            attention_resolutions=(), # (4, 2)
-            cond_dim=args.model.cross_attention_dim,
+            attention_resolutions=(4,),  # cross-attention at 4× downsampled resolution
+            encoder_channels=encoder_channels,
             channel_mult=(1, 2, 4),
             dropout=0,
         )

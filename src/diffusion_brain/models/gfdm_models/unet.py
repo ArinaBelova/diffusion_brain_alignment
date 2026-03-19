@@ -65,13 +65,16 @@ class TimestepBlock(nn.Module):
 class TimestepEmbedSequential(nn.Sequential, TimestepBlock):
     """
     A sequential module that passes timestep embeddings to the children that
-    support it as an extra input.
+    support it as an extra input. Optionally passes encoder_out to
+    AttentionBlock layers for cross-attention.
     """
 
-    def forward(self, x, emb):
+    def forward(self, x, emb, encoder_out=None):
         for layer in self:
             if isinstance(layer, TimestepBlock):
                 x = layer(x, emb)
+            elif isinstance(layer, AttentionBlock):
+                x = layer(x, encoder_out=encoder_out)
             else:
                 x = layer(x)
         return x
@@ -291,6 +294,10 @@ class AttentionBlock(nn.Module):
         if attention_type == "flash":
             raise NotImplementedError()
             self.attention = QKVFlashAttention(channels, self.num_heads)
+        elif encoder_channels is not None:
+            # Use QKVAttention (not Legacy) when cross-attention is needed,
+            # because QKVAttentionLegacy doesn't support encoder_kv.
+            self.attention = QKVAttention(self.num_heads)
         else:
             # split heads before split qkv
             self.attention = QKVAttentionLegacy(self.num_heads)
@@ -534,6 +541,7 @@ class GFDM_UNetModel(nn.Module):
         use_scale_shift_norm=False,
         resblock_updown=False,
         use_new_attention_order=False,
+        encoder_channels=None,
     ):
         super().__init__()
 
@@ -554,6 +562,7 @@ class GFDM_UNetModel(nn.Module):
         self.num_heads = num_heads
         self.num_head_channels = num_head_channels
         self.num_heads_upsample = num_heads_upsample
+        self.encoder_channels = encoder_channels
 
         time_embed_dim = model_channels * 4
         self.time_embed = nn.Sequential(
@@ -596,6 +605,7 @@ class GFDM_UNetModel(nn.Module):
                             num_head_channels=num_head_channels,
                             use_new_attention_order=use_new_attention_order,
                             dims=dims,
+                            encoder_channels=encoder_channels,
                         )
                     )
                 self.input_blocks.append(TimestepEmbedSequential(*layers))
@@ -642,6 +652,7 @@ class GFDM_UNetModel(nn.Module):
                 num_head_channels=num_head_channels,
                 use_new_attention_order=use_new_attention_order,
                 dims=dims,
+                encoder_channels=encoder_channels,
             ),
             ResBlock(
                 ch,
@@ -679,6 +690,7 @@ class GFDM_UNetModel(nn.Module):
                             num_head_channels=num_head_channels,
                             use_new_attention_order=use_new_attention_order,
                             dims=dims,
+                            encoder_channels=encoder_channels,
                         )
                     )
                 if level and i == num_res_blocks:
@@ -724,13 +736,15 @@ class GFDM_UNetModel(nn.Module):
     #     self.middle_block.apply(convert_module_to_f32)
     #     self.output_blocks.apply(convert_module_to_f32)
 
-    def forward(self, x, timesteps, y=None):
+    def forward(self, x, timesteps, y=None, encoder_out=None):
         """
         Apply the model to an input batch.
 
         :param x: an [N x C x ...] Tensor of inputs.
         :param timesteps: a 1-D batch of timesteps.
         :param y: an [N] Tensor of labels, if class-conditional.
+        :param encoder_out: an [N x encoder_channels x num_tokens] Tensor for
+            cross-attention conditioning (e.g. tokenized ANN activations).
         :return: an [N x C x ...] Tensor of outputs.
         """
 
@@ -750,13 +764,11 @@ class GFDM_UNetModel(nn.Module):
 
         h = x.type(self.dtype)
         for module in self.input_blocks:
-            h = module(h, emb)
+            h = module(h, emb, encoder_out=encoder_out)
             hs.append(h)
-        h = self.middle_block(h, emb)
+        h = self.middle_block(h, emb, encoder_out=encoder_out)
         for module in self.output_blocks:
-            # print("h shape ", h.shape)
-            # print("hs length: ", len(hs))
             h = th.cat([h, hs.pop()], dim=1)
-            h = module(h, emb)
+            h = module(h, emb, encoder_out=encoder_out)
         h = h.type(x.dtype)
         return self.out(h)

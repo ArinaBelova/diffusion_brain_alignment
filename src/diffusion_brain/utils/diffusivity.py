@@ -236,9 +236,25 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
 
             if cond is None:
                 cond = torch.zeros(x.shape[0], args.model.cross_attention_dim, device=x.device)
-            cond_uncond = torch.zeros_like(cond).to(device)
-            score_uncond = score_fn(x, time_unet, cond_uncond)
-            score_cond = score_fn(x, time_unet, cond)
+
+            if args.model.name == "gfdm-unet-1d-cond" and ann_tokenizer is not None:
+                # Tokenize ANN conditioning for cross-attention (same as 2D model)
+                def _to_encoder_out(c):
+                    tokens = ann_tokenizer(c.float())  # (B, num_tokens, token_dim)
+                    return tokens.permute(0, 2, 1)     # (B, token_dim, num_tokens)
+
+                encoder_out_cond = _to_encoder_out(cond)
+                encoder_out_uncond = torch.zeros_like(encoder_out_cond)
+                score_uncond = score_fn(x, time_unet, encoder_out=encoder_out_uncond)
+                score_cond = score_fn(x, time_unet, encoder_out=encoder_out_cond)
+            elif args.model.name == "dit":
+                cond_uncond = torch.zeros_like(cond).to(device)
+                score_uncond = score_fn(x, time_unet, cond_uncond)
+                score_cond = score_fn(x, time_unet, cond)
+            else:
+                cond_uncond = torch.zeros_like(cond).to(device)
+                score_uncond = score_fn(x, time_unet, encoder_out=cond_uncond)
+                score_cond = score_fn(x, time_unet, encoder_out=cond)
 
             if debug_conditioning and idx == 0:
                 delta = (score_cond - score_uncond).abs().mean().item()
@@ -246,7 +262,10 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
 
                 if cond.shape[0] > 1:
                     perm = torch.randperm(cond.shape[0], device=cond.device)
-                    score_shuf = score_fn(x, time_unet, cond[perm])
+                    if args.model.name == "gfdm-unet-1d-cond" and ann_tokenizer is not None:
+                        score_shuf = score_fn(x, time_unet, encoder_out=_to_encoder_out(cond[perm]))
+                    else:
+                        score_shuf = score_fn(x, time_unet, cond[perm])
                     delta_shuf = (score_cond - score_shuf).abs().mean().item()
                     print(
                         f"[conditioning-check] {args.model.name} step0: Δ(cond-uncond)={delta:.3e}, "

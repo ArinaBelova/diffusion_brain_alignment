@@ -13,6 +13,17 @@ from diffusion_brain.data_utils import get_dataloader
 from diffusion_brain.utils.fmri_behav_data_utils import signal_to_2d
 
 _STEP_TAG_RE = re.compile(r"step_(\d+)")
+_MODEL_PREFIXES = ("checkpoint_", "model_checkpoint_", "model_")
+
+
+def _resolve_model_file(input_folder, suffix):
+    """Try 'checkpoint_', 'model_checkpoint_', and 'model_' prefixes; return the first that exists."""
+    for prefix in _MODEL_PREFIXES:
+        candidate = f"{prefix}{suffix}.pth"
+        if os.path.isfile(os.path.join(input_folder, candidate)):
+            return candidate
+    # Fall back to checkpoint_ prefix (will produce a clear FileNotFoundError later)
+    return f"checkpoint_{suffix}.pth"
 
 
 def _infer_wandb_step(model_name, args, model_dir=None):
@@ -70,18 +81,20 @@ def generate_sample_loop_toy(args):
     else:
         print(f"Testing the model at step {args.model.which}")
         if str(args.model.which).lower() == "final":
-            model_files = ["model_final.pth"]
+            model_files = [_resolve_model_file(args.model.input_folder, "final")]
         elif str(args.model.which).lower() == "best":
-            model_files = ["model_best.pth"]
+            model_files = [_resolve_model_file(args.model.input_folder, "best")]
         else:
-            model_files = [f"model_step_{args.model.which}.pth"]    
+            model_files = [_resolve_model_file(args.model.input_folder, f"step_{args.model.which}")]
 
     for model_file in model_files:
         print("Setting up the model: ", model_file)
         model_path = os.path.join(args.model.input_folder, model_file)
         checkpoint = torch.load(model_path, map_location=DEVICE)
         model = set_model(args)
-        if 'state_dict' in checkpoint:
+        if 'model_state_dict' in checkpoint:
+            model.load_state_dict(checkpoint['model_state_dict'])
+        elif 'state_dict' in checkpoint:
             model.load_state_dict(checkpoint['state_dict'])
         else:
             # Sometimes the checkpoint IS the state_dict itself
@@ -146,23 +159,23 @@ def generate_sample_loop(args):
         model_files = []
         for step in args.model.which:
             if str(step).lower() == "final":
-                model_files.append("model_final.pth")
+                model_files.append(_resolve_model_file(args.model.input_folder, "final"))
             elif str(step).lower() == "best":
-                model_files.append("model_best.pth")    
+                model_files.append(_resolve_model_file(args.model.input_folder, "best"))
             else:
-                model_files.append(f"model_step_{step}.pth")
+                model_files.append(_resolve_model_file(args.model.input_folder, f"step_{step}"))
     else:
         print(f"Testing the model at step {args.model.which}")
         if str(args.model.which).lower() == "final":
-            model_files = ["model_final.pth"]
+            model_files = [_resolve_model_file(args.model.input_folder, "final")]
         elif str(args.model.which).lower() == "best":
-            model_files = ["model_best.pth"]    
+            model_files = [_resolve_model_file(args.model.input_folder, "best")]
         else:
-            model_files = [f"model_step_{args.model.which}.pth"]
+            model_files = [_resolve_model_file(args.model.input_folder, f"step_{args.model.which}")]
 
     # Create ANNTokenizer if using learned conditioning
     ann_tokenizer = None
-    if cond_token_mode == "learned" and args.model.name == "unet-diffusers":
+    if cond_token_mode == "learned" and args.model.name in ["unet-diffusers", "gfdm-unet-1d-cond"]:
         ann_tokenizer = ANNTokenizer(ann_dim=ann_dim, num_tokens=num_tokens, token_dim=token_dim).to(DEVICE)
         print(f"ANNTokenizer created for generation: {ann_dim} -> {num_tokens} tokens x {token_dim}-dim")
 
@@ -172,21 +185,33 @@ def generate_sample_loop(args):
         print("model path is ", model_path)
         checkpoint = torch.load(model_path, map_location=DEVICE)
         model = set_model(args)
-        if 'state_dict' in checkpoint:
-            model.load_state_dict(checkpoint['state_dict'])
-        else:
-            model.load_state_dict(checkpoint)
 
-        # Load matching ANNTokenizer checkpoint
-        if ann_tokenizer is not None:
-            tokenizer_file = model_file.replace("model_", "ann_tokenizer_")
-            tokenizer_path = os.path.join(args.model.input_folder, tokenizer_file)
-            if os.path.isfile(tokenizer_path):
-                ann_tokenizer.load_state_dict(torch.load(tokenizer_path, map_location=DEVICE))
-                print(f"Loaded ANNTokenizer from {tokenizer_path}")
+        # Support both bundled checkpoint format (checkpoint_*.pth) and
+        # legacy format (model_*.pth with separate ann_tokenizer_*.pth)
+        if 'model_state_dict' in checkpoint:
+            # New bundled checkpoint format
+            model.load_state_dict(checkpoint['model_state_dict'])
+            if ann_tokenizer is not None and 'ann_tokenizer_state_dict' in checkpoint:
+                ann_tokenizer.load_state_dict(checkpoint['ann_tokenizer_state_dict'])
+                print(f"Loaded ANNTokenizer from bundled checkpoint {model_file}")
+                ann_tokenizer.eval()
+        else:
+            # Legacy format: model weights only
+            if 'state_dict' in checkpoint:
+                model.load_state_dict(checkpoint['state_dict'])
             else:
-                print(f"WARNING: ANNTokenizer checkpoint not found at {tokenizer_path}")
-            ann_tokenizer.eval()
+                model.load_state_dict(checkpoint)
+
+            # Load matching ANNTokenizer checkpoint (legacy separate file)
+            if ann_tokenizer is not None:
+                tokenizer_file = model_file.replace("model_", "ann_tokenizer_")
+                tokenizer_path = os.path.join(args.model.input_folder, tokenizer_file)
+                if os.path.isfile(tokenizer_path):
+                    ann_tokenizer.load_state_dict(torch.load(tokenizer_path, map_location=DEVICE))
+                    print(f"Loaded ANNTokenizer from {tokenizer_path}")
+                else:
+                    print(f"WARNING: ANNTokenizer checkpoint not found at {tokenizer_path}")
+                ann_tokenizer.eval()
 
         model.eval()  # set to eval mode for generation
         print("model device: ", next(model.parameters()).device)
