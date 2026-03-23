@@ -103,21 +103,35 @@ def set_model(args):
         # ANN conditioning goes exclusively through cross-attention (via ANNTokenizer).
         # The time-embedding / class_embed slot is deliberately left free for future
         # discrete subject-identity conditioning (nn.Embedding added to time embedding).
+
+        # Read block config from yaml, with backwards-compatible defaults.
+        block_out_channels = tuple(getattr(args.model, "block_out_channels", (64, 128, 256)))
+        down_block_types = tuple(getattr(args.model, "down_block_types", (
+            "DownBlock2D",
+            "DownBlock2D",
+            "CrossAttnDownBlock2D",
+        )))
+        up_block_types = tuple(getattr(args.model, "up_block_types", (
+            "CrossAttnUpBlock2D",
+            "UpBlock2D",
+            "UpBlock2D",
+        )))
+
+        assert len(block_out_channels) == len(down_block_types) == len(up_block_types), (
+            f"block_out_channels ({len(block_out_channels)}), down_block_types "
+            f"({len(down_block_types)}), and up_block_types ({len(up_block_types)}) must have equal length"
+        )
+        print(f"  block_out_channels: {block_out_channels}")
+        print(f"  down_block_types:   {list(down_block_types)}")
+        print(f"  up_block_types:     {list(up_block_types)}")
+
         unet_kwargs = dict(
             in_channels=args.model.c_in,
             out_channels=args.model.c_out,
             sample_size=args.model.input_size,
-            block_out_channels=(64, 128, 256),
-            down_block_types=(
-                "DownBlock2D",
-                "DownBlock2D",
-                "CrossAttnDownBlock2D",  # CrossAttn only at deepest (smallest spatial res 64x64)
-            ),
-            up_block_types=(
-                "CrossAttnUpBlock2D",    # CrossAttn only at deepest
-                "UpBlock2D",
-                "UpBlock2D",
-            ),
+            block_out_channels=block_out_channels,
+            down_block_types=down_block_types,
+            up_block_types=up_block_types,
             cross_attention_dim=args.model.cross_attention_dim,
             num_class_embeds=None,
         )

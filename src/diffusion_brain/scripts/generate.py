@@ -11,6 +11,8 @@ from diffusion_brain.models import set_model, ANNTokenizer
 from diffusion_brain.models.autoencoder import LinearAutoencoder, get_linear_autoencoder
 from diffusion_brain.data_utils import get_dataloader
 from diffusion_brain.utils.fmri_behav_data_utils import signal_to_2d
+from diffusion_brain.utils.grad_updaters import EMAModel
+
 
 _STEP_TAG_RE = re.compile(r"step_(\d+)")
 _MODEL_PREFIXES = ("checkpoint_", "model_checkpoint_", "model_")
@@ -195,6 +197,17 @@ def generate_sample_loop(args):
                 ann_tokenizer.load_state_dict(checkpoint['ann_tokenizer_state_dict'])
                 print(f"Loaded ANNTokenizer from bundled checkpoint {model_file}")
                 ann_tokenizer.eval()
+
+            # If EMA weights are available, load them into the model for generation
+            # (EMA weights are smoother and produce better samples)
+            if 'ema_state_dict' in checkpoint:
+                all_params = list(model.parameters())
+                if ann_tokenizer is not None:
+                    all_params += list(ann_tokenizer.parameters())
+                ema = EMAModel(all_params, decay=checkpoint['ema_state_dict']['decay'])
+                ema.load_state_dict(checkpoint['ema_state_dict'])
+                ema.copy_to(all_params)
+                print(f"Loaded EMA weights (decay={ema.decay}, updates={ema.num_updates}) for generation")
         else:
             # Legacy format: model weights only
             if 'state_dict' in checkpoint:
@@ -286,16 +299,13 @@ def main():
                 args=args,
                 step_num=step_num,
             )
-
-            if args.data.is_2d:
-                wandb.log({f"true_fmri_data_model_{model_name}": [wandb.Image(true_fmri[i].cpu() * 255) for i in range(min(3, true_fmri.shape[0]))],
-                           f"generated_data_model_{model_name}": [wandb.Image(generated_samples_per_model[i].cpu() * 255) for i in range(min(3, generated_samples_per_model.shape[0]))]})
-            else:
+            
+            if not args.data.is_2d:
                 # I want to see non-interpolated on pycortex flatmap images!
                 one_generated_sample_2d, _ = signal_to_2d(args, one_signal_to_transform=generated_samples_per_model[0])
                 one_fmri_signal_2d, _ = signal_to_2d(args, one_signal_to_transform=generated_samples_per_model[0])
-                wandb.log({f"true_fmri_data_model_{model_name}": wandb.Image(one_fmri_signal_2d * 255),
-                           f"generated_data_model_{model_name}": wandb.Image(one_generated_sample_2d * 255)})
+                wandb.log({f"true_fmri_data": wandb.Image(one_fmri_signal_2d * 255),
+                           f"generated_data": wandb.Image(one_generated_sample_2d * 255)})
 
             # no f-string in the name as i want to have all the models in the slide bar in wandb
             #pyplot_brain(generated_samples_per_model.mean(axis=0), args=args, savename=f"generated_samples_mean", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png', step_num=step_num)

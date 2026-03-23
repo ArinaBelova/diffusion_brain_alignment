@@ -47,7 +47,7 @@ def visualise_and_save_results(generated_samples, step, args, step_num=None, **k
 
         # plot r correlation
         if args.data.is_2d:
-            r_scores_across_batch_images = get_r_across_images_2d_data(args, generated_samples, kwargs.get('true_fmri'), step_num=step_num)
+            r_scores_across_batch_images = get_r_across_images_2d_data(args, generated_samples, kwargs.get('true_fmri'),  model_name = step, step_num=step_num)
         else:
             r_scores_across_batch_images = get_r_across_images_1d_data(args, generated_samples, kwargs.get('true_fmri'), step_num=step_num)
             pyplot_brain(r_scores_across_batch_images, args=args, savename=f"r_scores_across_batch_images_step", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png', step_num=step_num)
@@ -99,7 +99,7 @@ def pyplot_brain(fsavg_data, savename, figpath, args, save_type='png', max_cmap_
     # plt.close()
 
 
-def get_r_across_images_2d_data(args, generated_data_roi_2d, true_fmri, step_num=None, **kwargs):
+def get_r_across_images_2d_data(args, generated_data_roi_2d, true_fmri, step_num=None, model_name=None, **kwargs):
     if type(generated_data_roi_2d) == torch.Tensor:
         generated_data_roi_2d = generated_data_roi_2d.cpu().numpy()
 
@@ -115,6 +115,35 @@ def get_r_across_images_2d_data(args, generated_data_roi_2d, true_fmri, step_num
     locations_roi = np.load(locations_load_path, allow_pickle=True)["locations"]  # [2, n_locations]
 
     print("True signal shape: ", true_fmri.shape)  # Should be (n_locations, n_timepoints)
+
+    # Plot generated and true fMRI with the same RdBu_r colorscheme as the r-score map
+    from matplotlib.colors import TwoSlopeNorm as _TwoSlopeNorm
+    n_preview = min(3, generated_data_roi_2d.shape[0])
+
+    generated_data_to_report_wandb = []
+    for i in range(n_preview):
+        img = generated_data_roi_2d[i]
+        abs_max = max(abs(img.min()), abs(img.max()), 1e-8)
+        fig_g, ax_g = plt.subplots()
+        ax_g.imshow(img, cmap='RdBu_r', origin="lower",
+                    norm=_TwoSlopeNorm(vmin=-abs_max, vcenter=0, vmax=abs_max))
+        ax_g.set_title(f"Generated sample {i}")
+        plt.colorbar(ax_g.images[0], ax=ax_g)
+        generated_data_to_report_wandb.append(wandb.Image(fig_g))
+        plt.close(fig_g)
+
+    true_fmri_to_report_wandb = []
+    for i in range(n_preview):
+        img = true_fmri[i].squeeze()
+        abs_max = max(abs(img.min()), abs(img.max()), 1e-8)
+        fig_t, ax_t = plt.subplots()
+        ax_t.imshow(img, cmap='RdBu_r', origin="lower",
+                    norm=_TwoSlopeNorm(vmin=-abs_max, vcenter=0, vmax=abs_max))
+        ax_t.set_title(f"True fMRI sample {i}")
+        plt.colorbar(ax_t.images[0], ax=ax_t)
+        true_fmri_to_report_wandb.append(wandb.Image(fig_t))
+        plt.close(fig_t)
+
     y_coords = locations_roi[0]
     x_coords = locations_roi[1]
 
@@ -145,7 +174,9 @@ def get_r_across_images_2d_data(args, generated_data_roi_2d, true_fmri, step_num
     r_img[y_coords, x_coords] = r_arr
 
     from matplotlib.colors import TwoSlopeNorm
-    norm = TwoSlopeNorm(vmin=r_img.min(), vcenter=0, vmax=r_img.max())
+    abs_max = max(abs(r_img.min()), abs(r_img.max()))
+    norm = TwoSlopeNorm(vmin=-abs_max, vcenter=0, vmax=abs_max)
+    #norm = TwoSlopeNorm(vmin=r_img.min(), vcenter=0, vmax=r_img.max())
 
     plt.imshow(r_img, cmap='RdBu_r', origin="lower", norm=norm)
     plt.colorbar()
@@ -171,8 +202,8 @@ def get_r_across_images_2d_data(args, generated_data_roi_2d, true_fmri, step_num
         assert len(true_fmri_by_voxel) == len(generated_sample)
         r_scores_across_voxels[image_idx] = scipy.stats.pearsonr(true_fmri_by_voxel, generated_sample)[0]
 
-    r_payload = _attach_model_step({"generated_data": [wandb.Image(generated_data_roi_2d[i].cpu() * 255) for i in range(min(3, generated_data_roi_2d.shape[0]))],
-                                    "true_fmri_data": [wandb.Image(true_fmri[i].cpu() * 255) for i in range(min(3, true_fmri.shape[0]))],
+    r_payload = _attach_model_step({f"generated_data": generated_data_to_report_wandb,
+                                    f"true_fmri_data": true_fmri_to_report_wandb,
                                     "r_image": wandb.Image(fig),
                                     "mean_r_scores_across_voxels": np.mean(r_scores_across_voxels),
                                     "mean_r_scores_across_batch_images": np.mean(r_scores_across_batch_images)}, step_num)

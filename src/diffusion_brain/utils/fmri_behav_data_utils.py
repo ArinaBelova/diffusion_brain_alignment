@@ -122,15 +122,54 @@ def get_subject_conditions(behav_data_root, subj, n_sessions, keep_only_3repeats
 
 
 def get_train_test_indices(args):
-    overall_cond_ann = np.load(os.path.join(args.data.behav_data_root, args.data.subj + "_all_conditions.npy"), allow_pickle=True) 
-    
+    variant = getattr(args.data, "fmri_dataset_variant", "averaged")
+    if variant == "unaveraged":
+        return _get_train_test_indices_unaveraged(args)
+    return _get_train_test_indices_averaged(args)
+
+
+def _get_train_test_indices_averaged(args):
+    overall_cond_ann = np.load(os.path.join(args.data.behav_data_root, args.data.subj + "_all_conditions.npy"), allow_pickle=True)
+
     test_cond_ann = np.load(os.path.join(args.data.behav_data_root, "common_515_indices.npy"), allow_pickle=True)
     train_cond_ann = np.array([i for i in overall_cond_ann if i not in test_cond_ann])
 
     train_pos_indices = np.where(np.isin(overall_cond_ann, train_cond_ann))[0]
     test_pos_indices = np.where(np.isin(overall_cond_ann, test_cond_ann))[0]
-    
+
     return train_cond_ann, test_cond_ann, train_pos_indices, test_pos_indices
+
+
+def _get_train_test_indices_unaveraged(args):
+    """Train/test split for the unaveraged (full repetitions) NSD betas.
+
+    The betas file has shape (n_trials, 327684) with a matching nsd_ids.npy
+    of shape (n_trials,).  Multiple rows can share the same NSD image ID
+    (one per repetition).  We split rows by whether their NSD ID belongs to
+    the common-515 test set, keeping all repetitions on the correct side.
+
+    Returns the same 4-tuple as the averaged variant:
+        train_nsd_ids  – *unique* NSD IDs for ANN activation extraction
+        test_nsd_ids   – *unique* NSD IDs for ANN activation extraction
+        train_pos_indices – row indices into the betas file (may have repeats)
+        test_pos_indices  – row indices into the betas file (may have repeats)
+    """
+    nsd_ids_path = os.path.join(args.data.fmri_data_root, args.data.subj, "nsd_ids.npy")
+    all_nsd_ids = np.load(nsd_ids_path)  # (n_trials,)
+
+    test_set = set(np.load(
+        os.path.join(args.data.behav_data_root, "common_515_indices.npy"),
+        allow_pickle=True,
+    ).tolist())
+
+    is_test = np.array([nsd_id in test_set for nsd_id in all_nsd_ids])
+    test_pos_indices = np.where(is_test)[0]
+    train_pos_indices = np.where(~is_test)[0]
+
+    train_nsd_ids = np.unique(all_nsd_ids[train_pos_indices])
+    test_nsd_ids = np.unique(all_nsd_ids[test_pos_indices])
+
+    return train_nsd_ids, test_nsd_ids, train_pos_indices, test_pos_indices
 
 
 def get_train_test_subsets(fmri_dataset, activations_dataset, args):
@@ -170,6 +209,28 @@ def get_roi_mask(args):
     return roi_indices
 
 
+def _load_full_betas(args):
+    """Load full betas array (memory-mapped) and return (array, is_samples_first).
+
+    Averaged variant: shape (n_voxels, n_samples) — stored as {subj}_{filename}
+    Unaveraged variant: shape (n_samples, n_voxels) — stored as {subj}/{filename}
+    """
+    variant = getattr(args.data, "fmri_dataset_variant", "averaged")
+    if variant == "unaveraged":
+        fmri_path = os.path.join(
+            args.data.fmri_data_root, args.data.subj, args.data.fmri_data_name,
+        )
+        full_betas = np.load(fmri_path, mmap_mode='r')  # (n_samples, n_voxels)
+        return full_betas, True
+    else:
+        fmri_path = os.path.join(
+            args.data.fmri_data_root,
+            f"{args.data.subj}_{args.data.fmri_data_name}",
+        )
+        full_betas = np.load(fmri_path, mmap_mode='r')  # (n_voxels, n_samples)
+        return full_betas, False
+
+
 def preprocess_fmri_roi(args, save_path=None):
     """
     Extract ROI voxels from full fMRI data and save.
@@ -181,24 +242,26 @@ def preprocess_fmri_roi(args, save_path=None):
     # 1. Get ROI voxel indices
     roi_indices = get_roi_mask(args)
     print(f"ROI {args.data.roi}: {len(roi_indices)} voxels")
-    
+
+    # Load full betas (memory-mapped)
+    full_betas, samples_first = _load_full_betas(args)
+
+    # Extract ROI voxels → [n_samples, n_roi_voxels]
+    if samples_first:
+        roi_betas = full_betas[:, roi_indices]
+    else:
+        roi_betas = full_betas[roi_indices, :].T
+
     if args.data.is_2d:
-        roi_2d_data, locations = signal_to_2d(args)
+        # Pass pre-extracted ROI data directly to avoid loading from a 1D cache
+        roi_2d_data, locations = signal_to_2d(args, data_roi=roi_betas)
         np.savez(save_path, data=roi_2d_data, locations=locations)
         print(f"Saved 2D ROI images to {save_path}, shape: {roi_2d_data.shape}", flush=True)
-    else:            
-        # 2. Load full betas (memory-mapped)
-        fmri_path = os.path.join(args.data.fmri_data_root, f"{args.data.subj}_{args.data.fmri_data_name}")
-        full_betas = np.load(fmri_path, mmap_mode='r')  # [n_voxels, n_samples]
-        n_total_voxels = full_betas.shape[0]
-        
-        # 3. Extract ROI voxels
-        roi_betas = full_betas[roi_indices, :].T  # [n_samples, n_roi_voxels]
-        roi_betas = torch.from_numpy(roi_betas.copy()).float()
-        
+    else:
+        roi_betas = torch.from_numpy(np.array(roi_betas).copy()).float()
         torch.save(roi_betas, save_path)
         print(f"Saved 1D ROI betas to {save_path}, shape: {roi_betas.shape}", flush=True)
-    
+
     # Also save ROI indices for reference
     roi_indices_dir = os.path.join(args.data.roi_defs_dir, f"roi_indices",  f"{args.data.roi_file}")
     if not os.path.exists(roi_indices_dir):
@@ -211,23 +274,26 @@ def preprocess_fmri_roi(args, save_path=None):
 
 def ensure_fmri_roi_exists(args):
     """Thread-safe check and preprocessing for fMRI ROI data.
-    
+
     Determines the appropriate save path based on 1D vs 2D configuration,
     then delegates to preprocess_fmri_roi() which handles both formats.
     """
+    variant = getattr(args.data, "fmri_dataset_variant", "averaged")
+    variant_suffix = "_unaveraged" if variant == "unaveraged" else ""
+
     # Determine save path based on 1D vs 2D
     # /roi_defs/roi_preselected_extended_2d_images_res_1.0/streams/subj01_5.ngz
     if args.data.is_2d:
         save_path = os.path.join(
-            args.data.roi_defs_dir, f"roi_preselected_extended_2d_images_res_{args.data.grid_resolution_2d}", 
+            args.data.roi_defs_dir, f"roi_preselected_extended_2d_images_res_{args.data.grid_resolution_2d}",
             f"{args.data.roi_file}",
-            f"{args.data.subj}_{args.data.roi}.npz"
+            f"{args.data.subj}_{args.data.roi}{variant_suffix}.npz"
         )
     else:
         save_path = os.path.join(
-            args.data.roi_defs_dir, f"roi_preselected", 
+            args.data.roi_defs_dir, f"roi_preselected",
             f"{args.data.roi_file}",
-            f"{args.data.subj}_{args.data.roi}.pt"
+            f"{args.data.subj}_{args.data.roi}{variant_suffix}.pt"
         )
 
     if not os.path.exists(os.path.dirname(save_path)):
@@ -269,10 +335,14 @@ def signal_to_2d(args, **kwargs):
 
     roi_indices = np.load(os.path.join(args.data.roi_defs_dir, f"roi_indices", f"{args.data.roi_file}", f"{args.data.roi}.npy"))
     
-    # if we work with one signal or if we transform the whole dataset:
-    if kwargs.get("one_signal_to_transform"):
+    # if we work with one signal, a pre-loaded array, or the whole dataset:
+    if kwargs.get("one_signal_to_transform") is not None:
         data_roi = kwargs["one_signal_to_transform"]
-    else:    
+    elif kwargs.get("data_roi") is not None:
+        data_roi = kwargs["data_roi"]
+        if isinstance(data_roi, torch.Tensor):
+            data_roi = data_roi.cpu().numpy()
+    else:
         data_roi = torch.load(os.path.join(args.data.roi_defs_dir, f"roi_preselected", f"{args.data.roi_file}", f"{args.data.subj}_{args.data.roi}.pt")).cpu().numpy()
 
     pts_general = np.concatenate([pts_left[:,:2], pts_right[:,:2]], axis=0)

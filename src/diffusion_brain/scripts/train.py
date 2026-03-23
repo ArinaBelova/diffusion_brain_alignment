@@ -10,7 +10,7 @@ import torch.nn.functional as F
 from contextlib import nullcontext
 from scipy.stats import pearsonr
 
-from diffusion_brain.utils.grad_updaters import set_loss_function, set_optimiser, set_learning_rate_scheduler 
+from diffusion_brain.utils.grad_updaters import set_loss_function, set_optimiser, set_learning_rate_scheduler, EMAModel
 from diffusion_brain.models import set_model, ANNTokenizer
 from diffusion_brain.models.autoencoder import LinearAutoencoder
 from diffusion_brain.data_utils import get_dataloader
@@ -370,17 +370,17 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
         class_labels_arg = None
 
         # Log encoder_hidden_states diagnostics every 100 steps
-        if step % 100 == 0:
-            print(
-                f"[step {step}] encoder_hidden_states: "
-                f"shape={encoder_hidden_states.shape}, "
-                f"mean={encoder_hidden_states.mean().item():.6f}, "
-                f"std={encoder_hidden_states.std().item():.6f}, "
-                f"norm={torch.norm(encoder_hidden_states).item():.6f}, "
-                f"min={encoder_hidden_states.min().item():.6f}, "
-                f"max={encoder_hidden_states.max().item():.6f}",
-                flush=True
-            )
+        # if step % 100 == 0:
+        #     print(
+        #         f"[step {step}] encoder_hidden_states: "
+        #         f"shape={encoder_hidden_states.shape}, "
+        #         f"mean={encoder_hidden_states.mean().item():.6f}, "
+        #         f"std={encoder_hidden_states.std().item():.6f}, "
+        #         f"norm={torch.norm(encoder_hidden_states).item():.6f}, "
+        #         f"min={encoder_hidden_states.min().item():.6f}, "
+        #         f"max={encoder_hidden_states.max().item():.6f}",
+        #         flush=True
+        #     )
     else:
         masked_labels = label * (1 - mask) + (args.model.num_classes * mask) # don't use -1 as the empty label as nn.Embedding will throw error
         masked_labels = masked_labels.long()
@@ -399,14 +399,14 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
             encoder_hidden_states = torch.zeros(x_t.shape[0], 1, args.model.cross_attention_dim, device=x_t.device)
 
         # Debug: log what we're passing to the model
-        if step % 100 == 0:
-            print(
-                f"[step {step}] Calling UNet with encoder_hidden_states: "
-                f"type={type(encoder_hidden_states)}, "
-                f"shape={encoder_hidden_states.shape if hasattr(encoder_hidden_states, 'shape') else 'N/A'}, "
-                f"is_none={encoder_hidden_states is None}",
-                flush=True
-            )
+        # if step % 100 == 0:
+        #     print(
+        #         f"[step {step}] Calling UNet with encoder_hidden_states: "
+        #         f"type={type(encoder_hidden_states)}, "
+        #         f"shape={encoder_hidden_states.shape if hasattr(encoder_hidden_states, 'shape') else 'N/A'}, "
+        #         f"is_none={encoder_hidden_states is None}",
+        #         flush=True
+        #     )
         
         predicted_score = score_fn(x_t, t, encoder_hidden_states = encoder_hidden_states, class_labels=class_labels_arg).sample
     elif args.model.name == "gfdm-unet-1d-cond":
@@ -461,131 +461,132 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
         total_loss = denoise_loss
 
     # Diagnostics: check if conditioning is actually affecting predictions
-    cond_diagnostics = {}
-    if step % 100 == 0:
-        with torch.no_grad():
-            if args.data.data_name == "ann-brain" and args.model.name == "gfdm-unet-1d-cond" and label.shape[0] > 1 and ann_tokenizer is not None:
-                # 1D cross-attention conditioning diagnostics
-                cond_tokens = to_cond_tokens(label.float())
-                uncond_tokens = torch.zeros_like(cond_tokens)
-                perm = torch.randperm(label.shape[0], device=label.device)
-                shuffled_tokens = to_cond_tokens(label[perm].float())
+    # cond_diagnostics = {}
+    # if step % 100 == 0:
+    #     with torch.no_grad():
+    #         if args.data.data_name == "ann-brain" and args.model.name == "gfdm-unet-1d-cond" and label.shape[0] > 1 and ann_tokenizer is not None:
+    #             # 1D cross-attention conditioning diagnostics
+    #             cond_tokens = to_cond_tokens(label.float())
+    #             uncond_tokens = torch.zeros_like(cond_tokens)
+    #             perm = torch.randperm(label.shape[0], device=label.device)
+    #             shuffled_tokens = to_cond_tokens(label[perm].float())
 
-                with torch.autocast(device_type="cuda", enabled=False):
-                    x_t_f32 = x_t.float()
-                    cond_out = cond_tokens.float().permute(0, 2, 1)
-                    uncond_out = uncond_tokens.float().permute(0, 2, 1)
-                    shuf_out = shuffled_tokens.float().permute(0, 2, 1)
+    #             with torch.autocast(device_type="cuda", enabled=False):
+    #                 x_t_f32 = x_t.float()
+    #                 cond_out = cond_tokens.float().permute(0, 2, 1)
+    #                 uncond_out = uncond_tokens.float().permute(0, 2, 1)
+    #                 shuf_out = shuffled_tokens.float().permute(0, 2, 1)
 
-                    cond_pred = score_fn(x_t_f32, t, encoder_out=cond_out)
-                    shuffled_pred = score_fn(x_t_f32, t, encoder_out=shuf_out)
-                    uncond_pred = score_fn(x_t_f32, t, encoder_out=uncond_out)
+    #                 cond_pred = score_fn(x_t_f32, t, encoder_out=cond_out)
+    #                 shuffled_pred = score_fn(x_t_f32, t, encoder_out=shuf_out)
+    #                 uncond_pred = score_fn(x_t_f32, t, encoder_out=uncond_out)
 
-                if orig_len is not None:
-                    cond_pred = cond_pred[..., :orig_len]
-                    uncond_pred = uncond_pred[..., :orig_len]
-                    shuffled_pred = shuffled_pred[..., :orig_len]
+    #             if orig_len is not None:
+    #                 cond_pred = cond_pred[..., :orig_len]
+    #                 uncond_pred = uncond_pred[..., :orig_len]
+    #                 shuffled_pred = shuffled_pred[..., :orig_len]
 
-                sep_cond_uncond = F.l1_loss(cond_pred, uncond_pred, reduction="mean").item()
-                sep_cond_shuffled = F.l1_loss(cond_pred, shuffled_pred, reduction="mean").item()
-                sep_uncond_shuffled = F.l1_loss(uncond_pred, shuffled_pred, reduction="mean").item()
+    #             sep_cond_uncond = F.l1_loss(cond_pred, uncond_pred, reduction="mean").item()
+    #             sep_cond_shuffled = F.l1_loss(cond_pred, shuffled_pred, reduction="mean").item()
+    #             sep_uncond_shuffled = F.l1_loss(uncond_pred, shuffled_pred, reduction="mean").item()
 
-                cond_diagnostics.update({
-                    "sep_cond_uncond": sep_cond_uncond,
-                    "sep_cond_shuffled": sep_cond_shuffled,
-                    "sep_uncond_shuffled": sep_uncond_shuffled,
-                    "cond_pred_norm": float(torch.norm(cond_pred).item()),
-                    "uncond_pred_norm": float(torch.norm(uncond_pred).item()),
-                    "shuffled_pred_norm": float(torch.norm(shuffled_pred).item()),
-                })
-            elif args.data.data_name == "ann-brain" and args.model.name in ["unet-diffusers", "unet-diffusers-1d"] and label.shape[0] > 1:
-                # Compute predictions with different conditioning inputs (ann-brain uses continuous labels)
-                cond_tokens = to_cond_tokens(label.float())
-                uncond_tokens = torch.zeros_like(cond_tokens)
-                perm = torch.randperm(label.shape[0], device=label.device)
-                shuffled_tokens = to_cond_tokens(label[perm].float())
+    #             cond_diagnostics.update({
+    #                 "sep_cond_uncond": sep_cond_uncond,
+    #                 "sep_cond_shuffled": sep_cond_shuffled,
+    #                 "sep_uncond_shuffled": sep_uncond_shuffled,
+    #                 "cond_pred_norm": float(torch.norm(cond_pred).item()),
+    #                 "uncond_pred_norm": float(torch.norm(uncond_pred).item()),
+    #                 "shuffled_pred_norm": float(torch.norm(shuffled_pred).item()),
+    #             })
+    #         elif args.data.data_name == "ann-brain" and args.model.name in ["unet-diffusers", "unet-diffusers-1d"] and label.shape[0] > 1:
+    #             # Compute predictions with different conditioning inputs (ann-brain uses continuous labels)
+    #             cond_tokens = to_cond_tokens(label.float())
+    #             uncond_tokens = torch.zeros_like(cond_tokens)
+    #             perm = torch.randperm(label.shape[0], device=label.device)
+    #             shuffled_tokens = to_cond_tokens(label[perm].float())
 
-                # Run in float32: bfloat16 precision (~0.8%) rounds away the
-                # conditioning difference (<0.1%) making sep_cond_uncond appear zero.
-                with torch.autocast(device_type="cuda", enabled=False):
-                    x_t_f32 = x_t.float()
-                    # REAL CONDITIONING PASS
-                    if attn_weights_diag is not None:
-                        attn_weights_diag.set_pass_mode("real")
-                    cond_pred = score_fn(x_t_f32, t, encoder_hidden_states=cond_tokens.float(), class_labels=None).sample
+    #             # Run in float32: bfloat16 precision (~0.8%) rounds away the
+    #             # conditioning difference (<0.1%) making sep_cond_uncond appear zero.
+    #             with torch.autocast(device_type="cuda", enabled=False):
+    #                 x_t_f32 = x_t.float()
+    #                 # REAL CONDITIONING PASS
+    #                 if attn_weights_diag is not None:
+    #                     attn_weights_diag.set_pass_mode("real")
+    #                 cond_pred = score_fn(x_t_f32, t, encoder_hidden_states=cond_tokens.float(), class_labels=None).sample
 
-                    # SHUFFLED CONDITIONING PASS
-                    if attn_weights_diag is not None:
-                        attn_weights_diag.set_pass_mode("shuffled")
-                    shuffled_pred = score_fn(x_t_f32, t, encoder_hidden_states=shuffled_tokens.float(), class_labels=None).sample
+    #                 # SHUFFLED CONDITIONING PASS
+    #                 if attn_weights_diag is not None:
+    #                     attn_weights_diag.set_pass_mode("shuffled")
+    #                 shuffled_pred = score_fn(x_t_f32, t, encoder_hidden_states=shuffled_tokens.float(), class_labels=None).sample
 
-                    # UNCOND PASS
-                    uncond_pred = score_fn(x_t_f32, t, encoder_hidden_states=uncond_tokens.float(), class_labels=None).sample
+    #                 # UNCOND PASS
+    #                 uncond_pred = score_fn(x_t_f32, t, encoder_hidden_states=uncond_tokens.float(), class_labels=None).sample
                 
-                # Compute attention sensitivity (difference between real and shuffled conditioning)
-                if attn_weights_diag is not None:
-                    sensitivity = attn_weights_diag.compute_sensitivity()
-                    cond_diagnostics.update(sensitivity)
+    #             # Compute attention sensitivity (difference between real and shuffled conditioning)
+    #             if attn_weights_diag is not None:
+    #                 sensitivity = attn_weights_diag.compute_sensitivity()
+    #                 cond_diagnostics.update(sensitivity)
                 
-                if orig_shape is not None:
-                    h, w = orig_shape
-                    cond_pred = cond_pred[..., :h, :w]
-                    uncond_pred = uncond_pred[..., :h, :w]
-                    shuffled_pred = shuffled_pred[..., :h, :w]
+    #             if orig_shape is not None:
+    #                 h, w = orig_shape
+    #                 cond_pred = cond_pred[..., :h, :w]
+    #                 uncond_pred = uncond_pred[..., :h, :w]
+    #                 shuffled_pred = shuffled_pred[..., :h, :w]
                 
-                # Compute separations
-                sep_cond_uncond = F.l1_loss(cond_pred, uncond_pred, reduction="mean").item()
-                sep_cond_shuffled = F.l1_loss(cond_pred, shuffled_pred, reduction="mean").item()
-                sep_uncond_shuffled = F.l1_loss(uncond_pred, shuffled_pred, reduction="mean").item()
+    #             # Compute separations
+    #             sep_cond_uncond = F.l1_loss(cond_pred, uncond_pred, reduction="mean").item()
+    #             sep_cond_shuffled = F.l1_loss(cond_pred, shuffled_pred, reduction="mean").item()
+    #             sep_uncond_shuffled = F.l1_loss(uncond_pred, shuffled_pred, reduction="mean").item()
                 
-                cond_diagnostics.update({
-                    "sep_cond_uncond": sep_cond_uncond,
-                    "sep_cond_shuffled": sep_cond_shuffled,
-                    "sep_uncond_shuffled": sep_uncond_shuffled,
-                    "cond_pred_norm": float(torch.norm(cond_pred).item()),
-                    "uncond_pred_norm": float(torch.norm(uncond_pred).item()),
-                    "shuffled_pred_norm": float(torch.norm(shuffled_pred).item()),
-                })
-            elif args.data.data_name == "mnist" and args.model.name in ["unet-diffusers", "unet-diffusers-1d"] and label.shape[0] > 1:
-                # Compute predictions with different discrete label conditioning (MNIST)
-                cond_labels = label.long()
-                uncond_labels = torch.full_like(cond_labels, args.model.num_classes)  # "empty" label
-                perm = torch.randperm(label.shape[0], device=label.device)
-                shuffled_labels = cond_labels[perm]
+    #             cond_diagnostics.update({
+    #                 "sep_cond_uncond": sep_cond_uncond,
+    #                 "sep_cond_shuffled": sep_cond_shuffled,
+    #                 "sep_uncond_shuffled": sep_uncond_shuffled,
+    #                 "cond_pred_norm": float(torch.norm(cond_pred).item()),
+    #                 "uncond_pred_norm": float(torch.norm(uncond_pred).item()),
+    #                 "shuffled_pred_norm": float(torch.norm(shuffled_pred).item()),
+    #             })
+    #         elif args.data.data_name == "mnist" and args.model.name in ["unet-diffusers", "unet-diffusers-1d"] and label.shape[0] > 1:
+    #             # Compute predictions with different discrete label conditioning (MNIST)
+    #             cond_labels = label.long()
+    #             uncond_labels = torch.full_like(cond_labels, args.model.num_classes)  # "empty" label
+    #             perm = torch.randperm(label.shape[0], device=label.device)
+    #             shuffled_labels = cond_labels[perm]
                 
-                # All use zeros for encoder_hidden_states (as in training)
-                encoder_hidden_states_zeros = torch.zeros(x_t.shape[0], 1, args.model.cross_attention_dim, device=x_t.device)
+    #             # All use zeros for encoder_hidden_states (as in training)
+    #             encoder_hidden_states_zeros = torch.zeros(x_t.shape[0], 1, args.model.cross_attention_dim, device=x_t.device)
                 
-                cond_pred = score_fn(x_t, t, encoder_hidden_states=encoder_hidden_states_zeros, class_labels=cond_labels).sample
-                uncond_pred = score_fn(x_t, t, encoder_hidden_states=encoder_hidden_states_zeros, class_labels=uncond_labels).sample
-                shuffled_pred = score_fn(x_t, t, encoder_hidden_states=encoder_hidden_states_zeros, class_labels=shuffled_labels).sample
+    #             cond_pred = score_fn(x_t, t, encoder_hidden_states=encoder_hidden_states_zeros, class_labels=cond_labels).sample
+    #             uncond_pred = score_fn(x_t, t, encoder_hidden_states=encoder_hidden_states_zeros, class_labels=uncond_labels).sample
+    #             shuffled_pred = score_fn(x_t, t, encoder_hidden_states=encoder_hidden_states_zeros, class_labels=shuffled_labels).sample
                 
-                if orig_shape is not None:
-                    h, w = orig_shape
-                    cond_pred = cond_pred[..., :h, :w]
-                    uncond_pred = uncond_pred[..., :h, :w]
-                    shuffled_pred = shuffled_pred[..., :h, :w]
+    #             if orig_shape is not None:
+    #                 h, w = orig_shape
+    #                 cond_pred = cond_pred[..., :h, :w]
+    #                 uncond_pred = uncond_pred[..., :h, :w]
+    #                 shuffled_pred = shuffled_pred[..., :h, :w]
                 
-                # Compute separations
-                sep_cond_uncond = F.l1_loss(cond_pred, uncond_pred, reduction="mean").item()
-                sep_cond_shuffled = F.l1_loss(cond_pred, shuffled_pred, reduction="mean").item()
-                sep_uncond_shuffled = F.l1_loss(uncond_pred, shuffled_pred, reduction="mean").item()
+    #             # Compute separations
+    #             sep_cond_uncond = F.l1_loss(cond_pred, uncond_pred, reduction="mean").item()
+    #             sep_cond_shuffled = F.l1_loss(cond_pred, shuffled_pred, reduction="mean").item()
+    #             sep_uncond_shuffled = F.l1_loss(uncond_pred, shuffled_pred, reduction="mean").item()
                 
-                cond_diagnostics = {
-                    "sep_cond_uncond": sep_cond_uncond,
-                    "sep_cond_shuffled": sep_cond_shuffled,
-                    "sep_uncond_shuffled": sep_uncond_shuffled,
-                    "cond_pred_norm": float(torch.norm(cond_pred).item()),
-                    "uncond_pred_norm": float(torch.norm(uncond_pred).item()),
-                    "shuffled_pred_norm": float(torch.norm(shuffled_pred).item()),
-                }
+    #             cond_diagnostics = {
+    #                 "sep_cond_uncond": sep_cond_uncond,
+    #                 "sep_cond_shuffled": sep_cond_shuffled,
+    #                 "sep_uncond_shuffled": sep_uncond_shuffled,
+    #                 "cond_pred_norm": float(torch.norm(cond_pred).item()),
+    #                 "uncond_pred_norm": float(torch.norm(uncond_pred).item()),
+    #                 "shuffled_pred_norm": float(torch.norm(shuffled_pred).item()),
+    #             }
+    cond_diagnostics={}
 
     return total_loss, {
         "denoise_loss": float(denoise_loss.detach().item()),
         **cond_diagnostics,
     }
 
-def save_checkpoint(directory, model, optimizer, lr_scheduler, step, best_val_r_score, ann_tokenizer=None, suffix=""):
+def save_checkpoint(directory, model, optimizer, lr_scheduler, step, best_val_r_score, ann_tokenizer=None, ema=None, suffix=""):
     """Save a full training checkpoint that can be used to resume training.
 
     Args:
@@ -596,6 +597,7 @@ def save_checkpoint(directory, model, optimizer, lr_scheduler, step, best_val_r_
         step: Current training step
         best_val_r_score: Best validation r-score so far
         ann_tokenizer: Optional ANNTokenizer module
+        ema: Optional EMAModel for exponential moving average weights
         suffix: Filename suffix (e.g., "best", "step_5000", "final")
     """
     os.makedirs(directory, exist_ok=True)
@@ -608,13 +610,15 @@ def save_checkpoint(directory, model, optimizer, lr_scheduler, step, best_val_r_
     }
     if ann_tokenizer is not None:
         checkpoint["ann_tokenizer_state_dict"] = ann_tokenizer.state_dict()
+    if ema is not None:
+        checkpoint["ema_state_dict"] = ema.state_dict()
 
     fname = f"checkpoint_{suffix}.pth" if suffix else "checkpoint.pth"
     torch.save(checkpoint, os.path.join(directory, fname))
     print(f"Checkpoint saved: {fname} at step {step}", flush=True)
 
 
-def load_checkpoint(path, model, optimizer, lr_scheduler, ann_tokenizer=None, device="cpu"):
+def load_checkpoint(path, model, optimizer, lr_scheduler, ann_tokenizer=None, ema=None, device="cpu"):
     """Load a training checkpoint and restore all training state.
 
     Args:
@@ -623,6 +627,7 @@ def load_checkpoint(path, model, optimizer, lr_scheduler, ann_tokenizer=None, de
         optimizer: Optimizer (must already be created)
         lr_scheduler: Learning rate scheduler (must already be created)
         ann_tokenizer: Optional ANNTokenizer module
+        ema: Optional EMAModel to restore
         device: Device to map tensors to
 
     Returns:
@@ -640,6 +645,10 @@ def load_checkpoint(path, model, optimizer, lr_scheduler, ann_tokenizer=None, de
     if ann_tokenizer is not None and "ann_tokenizer_state_dict" in checkpoint:
         ann_tokenizer.load_state_dict(checkpoint["ann_tokenizer_state_dict"])
 
+    if ema is not None and "ema_state_dict" in checkpoint:
+        ema.load_state_dict(checkpoint["ema_state_dict"])
+        print(f"EMA state restored (num_updates={ema.num_updates})", flush=True)
+
     step = checkpoint["step"]
     best_val_r_score = checkpoint.get("best_val_r_score", -float('inf'))
 
@@ -649,7 +658,7 @@ def load_checkpoint(path, model, optimizer, lr_scheduler, ann_tokenizer=None, de
 
 def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_function, diffusion_process, args,
                autoencoder=None, loss_history=None, use_amp=False, accumulation_steps=1, crossattn_diag=None, attn_weights_diag=None,
-               ann_tokenizer=None):
+               ann_tokenizer=None, ema=None):
     """
     Single training step with gradient accumulation and mixed precision support.
     
@@ -750,45 +759,45 @@ def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_func
                 accumulated_diagnostics[key] = val
 
     # Collect gradient diagnostics from attn2 (cross-attention) layers BEFORE zero_grad
-    crossattn_grads = {}
-    layers_receiving_cond = 0
-    layers_not_receiving_cond = 0
+    # crossattn_grads = {}
+    # layers_receiving_cond = 0
+    # layers_not_receiving_cond = 0
     
-    if step % 100 == 0:
-        # Direct parameter inspection for attn2 layers
-        for name, param in model.named_parameters():
-            if param.grad is not None and "attn2" in name:
-                grad_norm = float(torch.norm(param.grad).item())
-                if grad_norm > 0:
-                    # Shorten name for logging: keep last 3 parts (needed for Q-norm Sequential)
-                    parts = name.split(".")
-                    short_name = ".".join(parts[-3:]) if len(parts) > 2 else ".".join(parts[-2:]) if len(parts) > 1 else parts[-1]
-                    crossattn_grads[f"grad_attn2_{short_name}"] = grad_norm
+    # if step % 100 == 0:
+    #     # Direct parameter inspection for attn2 layers
+    #     for name, param in model.named_parameters():
+    #         if param.grad is not None and "attn2" in name:
+    #             grad_norm = float(torch.norm(param.grad).item())
+    #             if grad_norm > 0:
+    #                 # Shorten name for logging: keep last 3 parts (needed for Q-norm Sequential)
+    #                 parts = name.split(".")
+    #                 short_name = ".".join(parts[-3:]) if len(parts) > 2 else ".".join(parts[-2:]) if len(parts) > 1 else parts[-1]
+    #                 crossattn_grads[f"grad_attn2_{short_name}"] = grad_norm
         
-        # Also collect from forward hook data if available
-        if crossattn_diag is not None and crossattn_diag.num_layers_patched > 0:
-            try:
-                crossattn_diags = crossattn_diag.get_diagnostics()
-                accumulated_diagnostics.update(crossattn_diags)
+    #     # Also collect from forward hook data if available
+    #     if crossattn_diag is not None and crossattn_diag.num_layers_patched > 0:
+    #         try:
+    #             crossattn_diags = crossattn_diag.get_diagnostics()
+    #             accumulated_diagnostics.update(crossattn_diags)
                 
-                # Count how many layers are receiving encoder_hidden_states (monkey-patch approach)
-                for key, val in crossattn_diags.items():
-                    if key.endswith("_has_conditioning"):
-                        if val:
-                            layers_receiving_cond += 1
-                        else:
-                            layers_not_receiving_cond += 1
-            except Exception as e:
-                print(f"Error collecting CrossAttn hook diagnostics: {e}", flush=True)
+    #             # Count how many layers are receiving encoder_hidden_states (monkey-patch approach)
+    #             for key, val in crossattn_diags.items():
+    #                 if key.endswith("_has_conditioning"):
+    #                     if val:
+    #                         layers_receiving_cond += 1
+    #                     else:
+    #                         layers_not_receiving_cond += 1
+    #         except Exception as e:
+    #             print(f"Error collecting CrossAttn hook diagnostics: {e}", flush=True)
         
-        # Add gradient info
-        if crossattn_grads:
-            accumulated_diagnostics.update(crossattn_grads)
-            print(
-                f"[step {step}] attn2 gradients: {len(crossattn_grads)} params with gradients, "
-                f"layers with conditioning: {layers_receiving_cond}, without: {layers_not_receiving_cond}",
-                flush=True
-            )
+    #     # Add gradient info
+    #     if crossattn_grads:
+    #         accumulated_diagnostics.update(crossattn_grads)
+    #         print(
+    #             f"[step {step}] attn2 gradients: {len(crossattn_grads)} params with gradients, "
+    #             f"layers with conditioning: {layers_receiving_cond}, without: {layers_not_receiving_cond}",
+    #             flush=True
+    #         )
     
     # gradient clipping: 
     #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0, norm_type=2)
@@ -796,6 +805,13 @@ def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_func
     optimizer.step()
     optimizer.zero_grad()
     lr_scheduler.step()
+
+    # Update EMA shadow weights after each optimizer step
+    if ema is not None:
+        all_params = list(model.parameters())
+        if ann_tokenizer is not None:
+            all_params += list(ann_tokenizer.parameters())
+        ema.update(all_params)
 
     # Track loss for histogram
     if loss_history is not None:
@@ -928,13 +944,21 @@ def train(args):
         print(f"ANNTokenizer created: {ann_dim} -> {num_tokens} tokens x {token_dim}-dim")
 
     # Initialize CrossAttn diagnostics
-    crossattn_diag = None
-    attn_weights_diag = None
-    if args.data.data_name == "ann-brain" and args.model.name == "unet-diffusers":
-        crossattn_diag = CrossAttnDiagnostics(model)
-        print("CrossAttn diagnostics enabled - will track gradient flow and attention patterns")
-        attn_weights_diag = AttentionWeightsDiagnostics(model)
-        print("Attention weights diagnostics enabled - will track attention output diversity")
+    # crossattn_diag = None
+    # attn_weights_diag = None
+    # if args.data.data_name == "ann-brain" and args.model.name == "unet-diffusers":
+    #     crossattn_diag = CrossAttnDiagnostics(model)
+    #     print("CrossAttn diagnostics enabled - will track gradient flow and attention patterns")
+    #     attn_weights_diag = AttentionWeightsDiagnostics(model)
+    #     print("Attention weights diagnostics enabled - will track attention output diversity")
+    crossattn_diag, attn_weights_diag = None, None  # Disabled for now to save overhead; can re-enable with config flag later
+
+    # Log parameter counts
+    def _count_params(m):
+        return sum(p.numel() for p in m.parameters() if p.requires_grad)
+    unet_params = _count_params(model)
+    tok_params = _count_params(ann_tokenizer) if ann_tokenizer is not None else 0
+    print(f"Learnable parameters: UNet={unet_params:,}  ANNTokenizer={tok_params:,}  Total={unet_params + tok_params:,}", flush=True)
 
     # Combine UNet + tokenizer parameters for optimizer
     all_params = list(model.parameters())
@@ -959,6 +983,16 @@ def train(args):
     # LR scheduler - total_steps equals args.train.steps since we step once per optimizer update
     lr_scheduler = set_learning_rate_scheduler(optimizer, args, total_steps=args.train.steps)
 
+    # EMA setup — shadow weights for smoother evaluation/generation
+    ema_decay = float(getattr(args.train, "ema_decay", 0.0))
+    ema = None
+    if ema_decay > 0.0:
+        ema_warmup = int(getattr(args.train, "ema_warmup_steps", 0))
+        ema = EMAModel(all_params, decay=ema_decay, warmup_steps=ema_warmup)
+        print(f"EMA enabled: decay={ema_decay}, warmup_steps={ema_warmup}")
+    else:
+        print("EMA disabled (train.ema_decay not set or 0.0)")
+
     # Resume from checkpoint if specified
     resume_from = getattr(args.train, "resume_from", None)
     start_step = 0
@@ -966,7 +1000,7 @@ def train(args):
     if resume_from is not None and os.path.isfile(resume_from):
         start_step, best_val_r_score = load_checkpoint(
             resume_from, model, optimizer, lr_scheduler,
-            ann_tokenizer=ann_tokenizer, device=DEVICE
+            ann_tokenizer=ann_tokenizer, ema=ema, device=DEVICE
         )
     elif resume_from is not None:
         print(f"WARNING: resume_from path '{resume_from}' not found, training from scratch.", flush=True)
@@ -1014,7 +1048,7 @@ def train(args):
             step, model, optimizer, lr_scheduler, train_iterator, loss_function,
             diffusion_process, args, autoencoder=autoencoder, loss_history=loss_history,
             use_amp=use_amp, accumulation_steps=accumulation_steps, crossattn_diag=crossattn_diag,
-            attn_weights_diag=attn_weights_diag, ann_tokenizer=ann_tokenizer
+            attn_weights_diag=attn_weights_diag, ann_tokenizer=ann_tokenizer, ema=ema
         )
 
         ##### Claude idea: run diagnostics every N steps and log to wandb #####
@@ -1032,10 +1066,15 @@ def train(args):
             print(f"Validation at step {step+1}", flush=True)
             # Switch to eval mode for full precision inference (float32)
             model.eval()
-            
+
+            # Swap in EMA weights for validation (smoother, more stable predictions)
+            if ema is not None:
+                ema.store(all_params)
+                ema.copy_to(all_params)
+
             # Inference runs in full precision (no autocast)
             with torch.no_grad():
-                # this one is a special case since we don't have a fixed label here like in MNIST case, 
+                # this one is a special case since we don't have a fixed label here like in MNIST case,
                 # rather continuous vectors that we should sample from the validation dataloader
                 # TODO: move this correlation calculation to a separate function!
                 current_val_r_score = None
@@ -1060,31 +1099,36 @@ def train(args):
                         generated_samples = generated_samples.squeeze(1)  # remove channel dim
 
                     current_val_r_score = visualise_and_save_results(generated_samples, step, args, true_fmri=true_fmri)
-                else: # toy, mnist and other data with discrete labels  
+                else: # toy, mnist and other data with discrete labels
                     generated_samples = diffusivity.generate_samples(args.validation.batch_size, model, diffusion_process, args, device=DEVICE)
-                    # TODO: add other image statistics later 
+                    # TODO: add other image statistics later
                     print("Generated samples shape:", generated_samples.shape, flush=True)
                     visualise_and_save_results(generated_samples, step, args)
-            
-            # Save best model based on validation r-score
+
+            # Save best model BEFORE restoring non-EMA weights, so the
+            # checkpoint contains the EMA weights that produced the r-score.
             if current_val_r_score is not None and current_val_r_score > best_val_r_score:
                 best_val_r_score = current_val_r_score
                 directory_to_save = f"{args.model.output_folder}/{args.jobid}"
                 save_checkpoint(directory_to_save, model, optimizer, lr_scheduler, step, best_val_r_score,
-                                ann_tokenizer=ann_tokenizer, suffix="best")
+                                ann_tokenizer=ann_tokenizer, ema=ema, suffix="best")
                 print(f"New best model saved at step {step} with r-score: {best_val_r_score:.4f}", flush=True)
                 log_wandb({"validation/best_r_score": best_val_r_score, "validation/best_step": step}, step=step)
+
+            # Restore original (non-EMA) weights for continued training
+            if ema is not None:
+                ema.restore(all_params)
 
         # Periodic checkpoint saving (in addition to best model saving)
         if step % args.model.save_freq == 0 and step > 0:
             directory_to_save = f"{args.model.output_folder}/{args.jobid}"
             save_checkpoint(directory_to_save, model, optimizer, lr_scheduler, step, best_val_r_score,
-                            ann_tokenizer=ann_tokenizer, suffix=f"step_{step}")
+                            ann_tokenizer=ann_tokenizer, ema=ema, suffix=f"step_{step}")
 
     # save the final model
     directory_to_save = f"{args.model.output_folder}/{args.jobid}"
     save_checkpoint(directory_to_save, model, optimizer, lr_scheduler, args.train.steps - 1, best_val_r_score,
-                    ann_tokenizer=ann_tokenizer, suffix="final")
+                    ann_tokenizer=ann_tokenizer, ema=ema, suffix="final")
     
     # Cleanup diagnostics
     if crossattn_diag is not None:

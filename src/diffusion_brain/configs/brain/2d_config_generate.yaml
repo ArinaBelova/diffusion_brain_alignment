@@ -44,6 +44,10 @@ model:
   token_dim: 256 # dimension of each token produced by ANNTokenizer
   num_classes: 1
   # cross_attention_dim: 2048 # it should be equal to dimensionality of conditioning vector! for now it's specifically re-written in the scripts
+  # UNet block config — must match training config
+  block_out_channels: [64, 128, 256, 512]
+  down_block_types: ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"]
+  up_block_types: ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"]
   remove_deep_conv: false
   input_folder: './model_outputs/ann-brain/ann-brain-cluster' #-197972/'
   run_id: 197972

@@ -1,0 +1,94 @@
+wandb:
+  project_name: conditional-2d-diffusion-brain
+
+state: train
+
+diffusion:
+  diffusion_type: vp
+  T: 1.0
+  eps: 1.e-3
+  beta_min: 0.1
+  beta_max: 20.0
+  max_diffusivity: ~
+
+data:
+  data_name: ann-brain
+  is_2d: true
+  fmri_dataset_variant: "unaveraged"  # use full repetitions (3x per image) instead of averaged betas
+  grid_resolution_2d: 1.0
+  resize_to_multiple: 64
+  images_data_path: './src/diffusion_brain/data/data_coco/'
+  behav_data_root: './src/diffusion_brain/data/behav/'
+  subj: "subj01"
+  fmri_data_root: '/data/datapool3/datasets/full_nsd_betas/processed/'  # per-subject folders: {subj}/betas_fsaverage_unaveraged.npy
+  fmri_data_name: 'betas_fsaverage_unaveraged.npy'
+  ann_model: "vit_b_16"
+  ann_model_weights: "IMAGENET1K_SWAG_E2E_V1"
+  ann_activations_data_path: './src/diffusion_brain/data/ann_activations/'
+  layer_name: "encoder.layers.encoder_layer_11.mlp"
+  roi: 5
+  roi_defs_dir: './src/diffusion_brain/data/roi_defs/'
+  roi_file: "streams"
+
+model:
+  name: unet-diffusers
+  c_in: 1
+  c_out: 1
+  time_dim: 256
+  cond_seq_len: 8
+  token_dim: 256
+  cond_token_mode: "learned"
+  num_classes: 1
+  # UNet block configuration — 4 levels with cross-attention at 3 spatial scales
+  block_out_channels: [64, 128, 256, 512]
+  down_block_types: ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"]
+  up_block_types: ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"]
+  ######### dit############## depth=12, hidden_size=384, patch_size=8, num_heads=6
+  num_heads: 12
+  depth: 12
+  hidden_size: 768
+  ###########################
+  dropout_prob: 0.1
+  lambda_cond_sep: 0.0
+  remove_deep_conv: false
+  save_freq: 5000
+  output_folder: './model_outputs/ann-brain/'
+  ############# autoencoder settings for future use #############
+  use_autoencoder: false
+  ae_save_path: './model_outputs/ann-brain/autoencoder/'
+  ae_name: 'ae_linear.pt'
+  ae_latent_dim: 1024
+  ae_epochs: 50
+  ae_lr: 1.e-4
+
+optim:
+  loss: mse
+  optim_name: adamw
+  weight_decay: 1.e-3
+  lr: 1.e-4
+  scheduler_name: onecycle
+  max_lr: 1.e-4
+
+train:
+  resume_from: ~
+  steps: 100000
+  batch_size: 8 # 8 for gpu3,4 32 for gpu5
+  dataset_size: 28455  # ~3x train samples (30000 total - 3*515 test = 28455)
+  num_workers: 4
+  histogram_freq: 1000
+  use_mixed_precision: false
+  gradient_accumulation_steps: 2
+  gradient_checkpointing: false
+  ema_decay: 0.999
+  ema_warmup_steps: 5000
+
+validation:
+  ode: false
+  eval_freq: 1000
+  batch_size: 64 # 128 for gpu5
+  n_steps: 100
+  guidance_scale: 3.0
+  output_folder: '/outputs/ann-brain/'
+  num_workers: 1
+  label_to_generate: 1
+  debug_conditioning: true

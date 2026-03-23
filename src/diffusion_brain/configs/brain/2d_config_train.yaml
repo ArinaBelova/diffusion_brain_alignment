@@ -49,12 +49,16 @@ model:
   num_classes: 1 # reserved for future subject-identity conditioning
   cond_token_mode: "learned" # "learned" uses ANNTokenizer; legacy: "chunk", "repeat"
   #cross_attention_dim: 2048 # it should be equal to dimensionality of conditioning vector, will be defined during training
+  # UNet block configuration — 4 levels with cross-attention at 3 spatial scales
+  block_out_channels: [64, 128, 256, 512]
+  down_block_types: ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"]
+  up_block_types: ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"]
   ######### dit############## depth=12, hidden_size=384, patch_size=8, num_heads=6
   num_heads: 12
   depth: 12
   hidden_size: 768
   ###########################
-  dropout_prob: 1.0 #0.2 #0.2 #0.2 #0.2 # label dropout in classifier-free training
+  dropout_prob: 0.1 #0.1 #0.2 #0.2 #0.2 #0.2 # label dropout in classifier-free training
   lambda_cond_sep: 0.0 # weight for conditioning separation loss; set to 0.0 to disable
   remove_deep_conv: false
   save_freq: 5000
@@ -83,13 +87,15 @@ optim:
 train:
   resume_from: ~ # path to checkpoint file to resume training (e.g., ./model_outputs/ann-brain/ann-brain-cluster-229416/checkpoint_step_5000.pth)
   steps: 100000 #10000 #2000 # train steps
-  batch_size: 32 # reduced for memory with CrossAttn blocks
+  batch_size: 8 # 32 on gpu5 # reduced for memory with CrossAttn blocks
   dataset_size: 9485 # 10000 - 515 images as train
   num_workers: 4
   histogram_freq: 1000 # frequency of logging loss histogram to wandb, set to 0 to disable
   use_mixed_precision: false #true  # Enable bfloat16 training
   gradient_accumulation_steps: 2 #4 #8  # effective batch size = batch_size * gradient_accumulation_steps
   gradient_checkpointing: false #true  #ue saves ~30-40% memory
+  ema_decay: 0.999  # EMA decay rate for shadow weights (0.0 to disable); used for validation/generation
+  ema_warmup_steps: 5000  # ramp EMA decay from 0 to ema_decay over this many optimizer steps
 
 # may need to combine this with either diffusion or validation or both
 # for training don't need sampling parameters, may need to move it to the completely different evaluation config
@@ -101,9 +107,9 @@ train:
 validation:
   ode: false
   eval_freq: 1000 #100
-  batch_size: 128 #64 #32 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
+  batch_size: 64 #128 on gpu5 #64 #32 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
   n_steps: 100 # SDE steps
-  guidance_scale: 0.0 #3.0 #3.0 #10.0 #0.8
+  guidance_scale: 3.0 #3.0 #3.0 #3.0 #10.0 #0.8
   output_folder: '/outputs/ann-brain/'
   num_workers: 1
   label_to_generate: 1 # it needs to be removed later when refactoring diffusivity.py as in ann-brain case we have continuous conditioning vector and not class labels;
