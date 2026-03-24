@@ -40,6 +40,9 @@ echo "${SLURM_GPUS_ON_NODE} GPUs are visible to the job, and will be used for tr
 
 # # for wandb certificates to work:
 export SSL_CERT_FILE=${SLURM_SUBMIT_DIR}/cacert.pem
+export APPTAINERENV_NETRC=/data/cluster/users/belova/.netrc
+export APPTAINERENV_WANDB_CONFIG_DIR=/data/cluster/users/belova/
+export APPTAINERENV_WANDB_DIR=${SLURM_SUBMIT_DIR}
 export APPTAINERENV_PYCORTEX_STORE="/data/datapool3/datasets/nsd_betas_condavg/"
 export NPROC_PER_NODE=${SLURM_GPUS_ON_NODE:-1}
 export MASTER_PORT=${MASTER_PORT:-29500}
@@ -51,7 +54,7 @@ export APPTAINERENV_MASTER_PORT=${MASTER_PORT}
 export APPTAINERENV_NCCL_SOCKET_FAMILY=${NCCL_SOCKET_FAMILY}
 export APPTAINERENV_GLOO_SOCKET_IFNAME=${GLOO_SOCKET_IFNAME}
 # Train
-apptainer exec --nv --bind ${LOCAL_JOB_DIR},src:/opt/app/src,/data/datapool3/datasets/nsd_betas_condavg/,/data/datapool3/datasets/full_nsd_betas/,my_pycortex_db:/opt/conda/envs/diffusion_brain/share/pycortex/db \
+apptainer exec --nv --bind /data/cluster/users/belova/.netrc,${LOCAL_JOB_DIR},src:/opt/app/src,/data/datapool3/datasets/nsd_betas_condavg/,/data/datapool3/datasets/full_nsd_betas/,my_pycortex_db:/opt/conda/envs/diffusion_brain/share/pycortex/db \
 --env PYTHONPATH=/opt/app/src \
 ./cluster/diffusion-brain.sif \
 bash -c "python ${SLURM_SUBMIT_DIR}/src/diffusion_brain/scripts/train.py --config ${SLURM_SUBMIT_DIR}/src/diffusion_brain/configs/brain/2d_config_train_unaveraged.yaml --jobid ann-brain-cluster-${SLURM_JOB_ID}"

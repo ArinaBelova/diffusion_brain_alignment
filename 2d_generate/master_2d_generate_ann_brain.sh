@@ -1,13 +1,13 @@
 ROIS=(5) #(18 5)
 ROI_FILES=("streams") #("HCP_MMP1" "streams") #
-CONDITIONING_STRENGTH=(20)
+CONDITIONING_STRENGTH=(3) # 3 was used in the last 2d trainig 
 # WEIGHTS=("ResNet50_Weights.IMAGENET1K_V2" "ResNet101_Weights.IMAGENET1K_V2" "ResNet152_Weights.IMAGENET1K_V2")
 # MODELS=("resnet50" "resnet101" "resnet152")
 ODES=(0) # 0 for sampling without ODE, 1 for sampling with ODE
 WEIGHTS=("IMAGENET1K_SWAG_E2E_V1") #("ResNet50_Weights.IMAGENET1K_V2")
 MODELS=("vit_b_16") #("resnet50")
-TRAINED_MODEL_FILES=(223400) #(211379 210760) #(197894 197972) # 201512 (197894 197972)
-NUM_GENERATION_STEPS=(10 100) # 250 400 500)
+TRAINED_MODEL_FILES=(230284) #(211379 210760) #(197894 197972) # 201512 (197894 197972)
+NUM_GENERATION_STEPS=(100) # 200 500 1000 250 400 500)
 GRID_RESOLUTIONS=(1.0) # in mm, for 2d case only, it will determine the grid size based on the bounding box of the ROI vertices;
 
 #for trained_model_file in "${TRAINED_MODEL_FILES[@]}"; do
