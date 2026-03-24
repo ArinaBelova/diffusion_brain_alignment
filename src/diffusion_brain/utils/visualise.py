@@ -50,8 +50,6 @@ def visualise_and_save_results(generated_samples, step, args, step_num=None, **k
             r_scores_across_batch_images = get_r_across_images_2d_data(args, generated_samples, kwargs.get('true_fmri'),  model_name = step, step_num=step_num)
         else:
             r_scores_across_batch_images = get_r_across_images_1d_data(args, generated_samples, kwargs.get('true_fmri'), step_num=step_num)
-            pyplot_brain(r_scores_across_batch_images, args=args, savename=f"r_scores_across_batch_images_step", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png', step_num=step_num)
-            r_scores_across_batch_images = np.mean(r_scores_across_batch_images)
             
         return r_scores_across_batch_images    
 
@@ -89,10 +87,7 @@ def pyplot_brain(fsavg_data, savename, figpath, args, save_type='png', max_cmap_
     
     fig = plt.gcf()
 
-    #wandb.log({f"{savename}": wandb.Html(plotly.io.to_html(fig))})
-    wandb.log(_attach_model_step({f"{savename}": wandb.Image(fig)}, step_num))
-
-    plt.close(fig) 
+    return fig    
     # os.makedirs(figpath, exist_ok=True) 
     # fig.suptitle(f'{savename} - max abs val: {np.nanmax(np.abs(fsavg_data)):.2f}')
     # plt.savefig(f'{figpath}/{savename}.{save_type}', dpi=600)
@@ -237,13 +232,20 @@ def get_r_across_images_1d_data(args, generated_data_roi, true_fmri, step_num=No
         assert len(true_fmri_by_voxel) == len(generated_sample)
         r_scores_across_voxels[image_idx] = scipy.stats.pearsonr(true_fmri_by_voxel, generated_sample)[0]
     
+    fig_r_scores_across_img = pyplot_brain(r_scores_across_batch_images, args=args, savename=f"r_scores_across_batch_images_step", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png', step_num=step_num)
+    fig_generated_data = pyplot_brain(generated_data_roi.mean(axis=0).cpu().numpy(), args=args, savename=f"generated_data_mean_across_images_step", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png', step_num=step_num)
+    fig_true_fmri = pyplot_brain(true_fmri.mean(axis=0).numpy(), args=args, savename=f"true_fmri_mean_across_images_step", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png', step_num=step_num)
+
     r_payload = _attach_model_step({
+        "r_scores_across_batch_images_step": wandb.Image(fig_r_scores_across_img),
+        "generated_data_across_batch_images": wandb.Image(fig_generated_data),
+        "true_fmri_data_across_batch_images": wandb.Image(fig_true_fmri),
         "mean_r_scores_across_batch_images": np.mean(r_scores_across_batch_images),
         "mean_r_scores_across_voxels": np.mean(r_scores_across_voxels)
     }, step_num)
 
     wandb.log(r_payload)
 
-    return r_scores_across_batch_images #np.mean(r_scores_across_batch_images)
+    return np.mean(r_scores_across_batch_images)
 
                     
