@@ -81,8 +81,8 @@ def pyplot_brain(fsavg_data, savename, figpath, args, save_type='png', max_cmap_
         boundar = np.nanmax(np.abs(fsavg_data))
     else:
         boundar = np.nanmax(np.abs(max_cmap_val))
-
-    vert = cortex.dataset.Vertex(full_brain_data, "fsaverage", cmap='RdBu_r', vmin=-boundar, vmax=boundar)    
+   
+    vert = cortex.dataset.Vertex(full_brain_data, "fsaverage", cmap='RdBu_r', vmin=-boundar, vmax=boundar)
     flatmap = cortex.quickflat.make_figure(vert, height=480, with_colorbar=1, with_rois=False)
     
     fig = plt.gcf()
@@ -209,7 +209,23 @@ def get_r_across_images_2d_data(args, generated_data_roi_2d, true_fmri, step_num
     return np.mean(r_scores_across_batch_images) # important for saving the best running model based on this metric 
 
 def get_r_across_images_1d_data(args, generated_data_roi, true_fmri, step_num=None, **kwargs):
-     # to store r scores across images for each voxel
+    
+    # Generate and log 3 samples of predicted and true fMRI data
+    # Build the grid
+    figs_pred, figs_true = [], []
+
+    for i in range(min(3, len(generated_data_roi))):
+        print("fmri_predicted shape is ", generated_data_roi[i].shape)
+        fig_pred = pyplot_brain(generated_data_roi[i], args=args, savename=f"generated_sample_idx_{i}", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png')
+        figs_pred.append(fig_pred)        
+        print("true_fmri_dataset shape is ", true_fmri[i].shape)
+        fig_true = pyplot_brain(true_fmri[i], args=args, savename=f"true_sample_idx_{i}_step", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png')
+        figs_true.append(fig_true)
+    
+    images_pred = [wandb.Image(f) for f in figs_pred]
+    images_true = [wandb.Image(f) for f in figs_true]
+
+    # to store r scores across images for each voxel
     r_scores_across_batch_images = np.empty((generated_data_roi.shape[1],))
     r_scores_across_voxels = np.empty((generated_data_roi.shape[0],))
 
@@ -237,9 +253,11 @@ def get_r_across_images_1d_data(args, generated_data_roi, true_fmri, step_num=No
     fig_true_fmri = pyplot_brain(true_fmri.mean(axis=0).numpy(), args=args, savename=f"true_fmri_mean_across_images_step", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png', step_num=step_num)
 
     r_payload = _attach_model_step({
-        "r_scores_across_batch_images_step": wandb.Image(fig_r_scores_across_img),
-        "generated_data_across_batch_images": wandb.Image(fig_generated_data),
-        "true_fmri_data_across_batch_images": wandb.Image(fig_true_fmri),
+        "three_generated_images": images_pred, 
+        "three_true_fmri_images": images_true,
+        "r_scores_across_batch_images": wandb.Image(fig_r_scores_across_img),
+        "mean_generated_data_across_batch_images": wandb.Image(fig_generated_data),
+        "mean_true_fmri_data_across_batch_images": wandb.Image(fig_true_fmri),
         "mean_r_scores_across_batch_images": np.mean(r_scores_across_batch_images),
         "mean_r_scores_across_voxels": np.mean(r_scores_across_voxels)
     }, step_num)
