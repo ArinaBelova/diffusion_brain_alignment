@@ -237,16 +237,23 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
             if cond is None:
                 cond = torch.zeros(x.shape[0], args.model.cross_attention_dim, device=x.device)
 
-            if args.model.name == "gfdm-unet-1d-cond" and ann_tokenizer is not None:
-                # Tokenize ANN conditioning for cross-attention (same as 2D model)
+            _cond_mode_1d = getattr(args.model, "cond_mode", "additive")
+
+            if args.model.name == "gfdm-unet-1d-cond" and _cond_mode_1d == "cross_attention":
+                # Cross-attention conditioning: tokenize ANN → encoder_out
                 def _to_encoder_out(c):
                     tokens = ann_tokenizer(c.float())  # (B, num_tokens, token_dim)
-                    return tokens.permute(0, 2, 1)     # (B, token_dim, num_tokens)
+                    return tokens.permute(0, 2, 1).contiguous()  # (B, token_dim, num_tokens)
 
                 encoder_out_cond = _to_encoder_out(cond)
                 encoder_out_uncond = torch.zeros_like(encoder_out_cond)
                 score_uncond = score_fn(x, time_unet, encoder_out=encoder_out_uncond)
                 score_cond = score_fn(x, time_unet, encoder_out=encoder_out_cond)
+            elif args.model.name == "gfdm-unet-1d-cond":
+                # Additive conditioning: pass raw ANN vector
+                cond_uncond = torch.zeros_like(cond).to(device)
+                score_uncond = score_fn(x, time_unet, cond=cond_uncond)
+                score_cond = score_fn(x, time_unet, cond=cond)
             elif args.model.name == "dit":
                 cond_uncond = torch.zeros_like(cond).to(device)
                 score_uncond = score_fn(x, time_unet, cond_uncond)
@@ -262,8 +269,10 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
 
                 if cond.shape[0] > 1:
                     perm = torch.randperm(cond.shape[0], device=cond.device)
-                    if args.model.name == "gfdm-unet-1d-cond" and ann_tokenizer is not None:
+                    if args.model.name == "gfdm-unet-1d-cond" and _cond_mode_1d == "cross_attention":
                         score_shuf = score_fn(x, time_unet, encoder_out=_to_encoder_out(cond[perm]))
+                    elif args.model.name == "gfdm-unet-1d-cond":
+                        score_shuf = score_fn(x, time_unet, cond=cond[perm])
                     else:
                         score_shuf = score_fn(x, time_unet, cond[perm])
                     delta_shuf = (score_cond - score_shuf).abs().mean().item()
@@ -306,10 +315,35 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
         else:
             next_step = x + (determ_drift - g(x, t)**2 * score) * dt + diffusivity_sample
 
+        # --- Per-step Imagen-style thresholding (Saharia et al., 2022) ---
+        # With high CFG guidance scales, scores are amplified and push x_t to
+        # extreme values mid-trajectory.  Clamping only at the final step cannot
+        # recover from a diverged trajectory.  Dynamic thresholding (percentile-
+        # based) is safe at every step because the clamp bound adapts to x_t's
+        # actual magnitude.  Static thresholding uses the fixed training-data
+        # range and is applied only in the second half of the trajectory
+        # (t < T/2) where x_t should be approaching the data manifold.
+        thresholding = getattr(args.validation, "thresholding", "none") if args is not None else "none"
+        if thresholding == "dynamic":
+            p = float(getattr(args.validation, "dynamic_thresholding_percentile", 0.995))
+            flat = next_step.reshape(next_step.shape[0], -1).abs()
+            s = torch.quantile(flat, p, dim=1)
+            s = s.clamp(min=1.0)
+            for _ in range(len(next_step.shape) - 1):
+                s = s.unsqueeze(-1)
+            next_step = next_step.clamp(-s, s)
+        elif thresholding == "static":
+            # Only clamp in the second half (t < T/2) to avoid interfering
+            # with legitimately noisy early steps
+            if t.item() < T / 2:
+                fmri_min = getattr(args.data, "fmri_min", None)
+                fmri_max = getattr(args.data, "fmri_max", None)
+                if fmri_min is not None and fmri_max is not None:
+                    next_step = next_step.clamp(fmri_min, fmri_max)
+
         x_traj.append(next_step)
-    
-    #return torch.stack(x_traj), next_step
-    return next_step 
+
+    return x_traj[-1]
 
 @torch.inference_mode()
 def generate_samples(num_samples: int,
@@ -342,8 +376,15 @@ def generate_samples(num_samples: int,
     elif args.data.data_name == "mnist": 
         dim_x = (args.model.c_in, args.model.input_size, args.model.input_size)
     else:
-        # For 2D brain data: input_size is already the padded size (C, H_padded, W_padded)
-        dim_x = args.model.input_size
+        # For 2D brain data: pad to the same multiple used during training
+        # so the UNet sees the same spatial dimensions it was trained on.
+        # (mirrors compute_2d_padding / pad_2d_to_multiple from train.py)
+        c, h, w = args.model.input_size
+        multiple = int(getattr(args.data, "resize_to_multiple", 8))
+        pad_h = (multiple - (h % multiple)) % multiple
+        pad_w = (multiple - (w % multiple)) % multiple
+        dim_x = (c, h + pad_h, w + pad_w)
+        original_size = (c, h, w)  # override for cropping back
 
     noise = torch.randn(size=(num_samples, *dim_x), device=device)
     mu, std = diffusion_process.brown_moments(torch.zeros(num_samples, *dim_x).to(device), diffusion_process.T)

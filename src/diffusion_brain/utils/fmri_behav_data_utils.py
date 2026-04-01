@@ -345,6 +345,10 @@ def signal_to_2d(args, **kwargs):
     else:
         data_roi = torch.load(os.path.join(args.data.roi_defs_dir, f"roi_preselected", f"{args.data.roi_file}", f"{args.data.subj}_{args.data.roi}.pt")).cpu().numpy()
 
+    # Ensure data_roi is 2D: (num_samples, num_voxels)
+    if data_roi.ndim == 1:
+        data_roi = data_roi[np.newaxis, :]
+
     pts_general = np.concatenate([pts_left[:,:2], pts_right[:,:2]], axis=0)
     pts_roi = pts_general[roi_indices]
 

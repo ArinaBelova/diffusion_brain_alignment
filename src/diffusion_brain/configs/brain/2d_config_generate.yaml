@@ -2,6 +2,7 @@ wandb:
   project_name: generate-conditional-2d-diffusion-brain
 
 state: generate
+seed: 42
 
 diffusion:
   diffusion_type: vp
@@ -21,6 +22,7 @@ data:
   data_name: ann-brain
   is_2d: true
   grid_resolution_2d: 1.0 # in mm, for 2d case only, it will determine the grid size based on the bounding box of the ROI vertices;
+  resize_to_multiple: 64 # must match training config
   images_data_path: './src/diffusion_brain/data/data_coco/'
   behav_data_root: './src/diffusion_brain/data/behav/'
   subj: "subj01"
@@ -66,6 +68,8 @@ validation:
   n_steps: 100 #100
   guidance_scale: 20.0 #0.8
   label_to_generate: 0 # STUB
-  output_folder: './outputs/generated_samples/ann-brain/'  
+  output_folder: './outputs/generated_samples/ann-brain/'
   num_workers: 1
-  final_model_num: 10000
+  final_model_num: 100000
+  thresholding: dynamic #static # none / static / dynamic; static clips to fMRI data [min, max], dynamic uses per-sample percentile
+  dynamic_thresholding_percentile: 0.995 # only used when thresholding=dynamic

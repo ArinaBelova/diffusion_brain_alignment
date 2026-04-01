@@ -176,22 +176,51 @@ def set_model(args):
             channel_mult=(1,2,4), # given by default but in larger resultion
             dims=2, # 2 for mnist
             dropout=0, # resnet dropout prob, not classifier-free dropout
+            time_embed_dim=args.model.time_embed_dim, # default is 1024, can be set in yaml
+            use_scale_shift_norm=True,
         )
     elif args.model.name == "gfdm-unet-1d-cond":
-        print("Setting GFDM UNet 1D conditional model with cross-attention")
-        # ANN conditioning goes through cross-attention (via ANNTokenizer),
-        # same as the 2D model. Time-embedding slot is free for subject identity.
-        encoder_channels = getattr(args.model, "cross_attention_dim", 256)
-        model = GFDM_UNet1DConditional(
-            in_channels=args.model.c_in,
-            model_channels=64,
-            out_channels=args.model.c_out,
-            num_res_blocks=3,
-            attention_resolutions=(4,),  # cross-attention at 4× downsampled resolution
-            encoder_channels=encoder_channels,
-            channel_mult=(1, 2, 4),
-            dropout=0,
-        )
+        cond_mode = getattr(args.model, "cond_mode", "additive")
+        cond_dim = getattr(args.model, "ann_dim", 768)
+
+        if cond_mode == "cross_attention":
+            # Cross-attention conditioning: ANNTokenizer → encoder_out at deepest resolution.
+            token_dim = int(getattr(args.model, "token_dim", 256))
+            print(f"Setting GFDM UNet 1D conditional model with cross-attention conditioning (encoder_channels={token_dim})")
+            model = GFDM_UNet1DConditional(
+                in_channels=args.model.c_in,
+                model_channels=64,
+                out_channels=args.model.c_out,
+                num_res_blocks=3,
+                attention_resolutions=(4,),  # cross-attention at 4× downsampled level
+                cond_dim=None,  # no additive conditioning
+                encoder_channels=token_dim,
+                channel_mult=(1, 2, 4),
+                dropout=0,
+                num_heads=2,
+                use_checkpoint=True,
+                time_embed_dim=args.model.time_embed_dim,
+                use_scale_shift_norm=True,
+            )
+        else:
+            # Additive ANN conditioning: ANN vector projected and added to time embedding.
+            cond_proj_type = getattr(args.model, "cond_proj_type", "linear")
+            print(f"Setting GFDM UNet 1D conditional model with additive conditioning (cond_proj={cond_proj_type})")
+            model = GFDM_UNet1DConditional(
+                in_channels=args.model.c_in,
+                model_channels=64,
+                out_channels=args.model.c_out,
+                num_res_blocks=3,
+                attention_resolutions=(),  # no cross-attention
+                cond_dim=cond_dim,
+                cond_proj_type=cond_proj_type,
+                channel_mult=(1, 2, 4),
+                dropout=0,
+                num_heads=2,
+                use_checkpoint=True,
+                time_embed_dim=args.model.time_embed_dim, # default is 1024, can be set in yaml
+                use_scale_shift_norm=True,
+            )
     elif args.model.name == "toy-mlp":
         print("Setting Toy Diffusion MLP model")
         model = ToyDiffusionMLP(

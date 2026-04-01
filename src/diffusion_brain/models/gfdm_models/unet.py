@@ -475,15 +475,12 @@ class QKVAttention(nn.Module):
             ek, ev = encoder_kv.chunk(2, dim=1)
             k = th.cat([ek, k], dim=-1)
             v = th.cat([ev, v], dim=-1)
-        scale = 1 / math.sqrt(math.sqrt(ch))
-        weight = th.einsum(
-            "bct,bcs->bts",
-            (q * scale).view(bs * self.n_heads, ch, length),
-            (k * scale).view(bs * self.n_heads, ch, -1),
-        )  # More stable with f16 than dividing afterwards
-        weight = th.softmax(weight.float(), dim=-1).type(weight.dtype)
-        a = th.einsum("bts,bcs->bct", weight, v.reshape(bs * self.n_heads, ch, -1))
-        return a.reshape(bs, -1, length)
+        # Reshape to (B, heads, seq, head_dim) for F.scaled_dot_product_attention
+        q = q.view(bs, self.n_heads, ch, length).transpose(2, 3)       # (B, H, T, C)
+        k = k.view(bs, self.n_heads, ch, -1).transpose(2, 3)           # (B, H, S, C)
+        v = v.view(bs, self.n_heads, ch, -1).transpose(2, 3)           # (B, H, S, C)
+        a = th.nn.functional.scaled_dot_product_attention(q, k, v)      # (B, H, T, C)
+        return a.transpose(2, 3).reshape(bs, -1, length)
 
     @staticmethod
     def count_flops(model, _x, y):
@@ -542,6 +539,7 @@ class GFDM_UNetModel(nn.Module):
         resblock_updown=False,
         use_new_attention_order=False,
         encoder_channels=None,
+        time_embed_dim=None,
     ):
         super().__init__()
 
@@ -564,7 +562,12 @@ class GFDM_UNetModel(nn.Module):
         self.num_heads_upsample = num_heads_upsample
         self.encoder_channels = encoder_channels
 
-        time_embed_dim = model_channels * 4
+        #time_embed_dim = 1024 # magic number # model_channels * 4
+        if time_embed_dim is not None:
+            time_embed_dim = time_embed_dim
+        else:
+            time_embed_dim = model_channels * 4
+        
         self.time_embed = nn.Sequential(
             linear(model_channels, time_embed_dim),
             nn.SiLU(),

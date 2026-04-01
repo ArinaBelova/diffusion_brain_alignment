@@ -99,21 +99,33 @@ class PairedBrainAnnDataset(Dataset):
             self.fmri_data = fmri_all[sample_indices] # [n_split, n_voxels]
 
         # Normalisation scale: std over active (non-zero) voxels only.
-        # The 2D brain images are sparse (~37% fill), so the global std is
+        # For 2D, the brain images are sparse (~37% fill), so the global std is
         # depressed by zeros and GroupNorm inside the UNet sees a tiny spatial
-        # std → it amplifies the non-zero voxels massively.  Dividing by the
+        # std → it amplifies the non-zero voxels massively.  For 1D, the same
+        # issue exists if voxels have variance far from 1.  Dividing by the
         # active-voxel std brings the signal to roughly unit variance, which
-        # keeps UNet activations in a sane range.
-        if self.is_2d:
-            if fmri_scale is not None:
-                self.fmri_scale = fmri_scale
-            else:
+        # keeps UNet activations in a sane range for both cases.
+        if fmri_scale is not None:
+            self.fmri_scale = fmri_scale
+        else:
+            if self.is_2d:
                 active_vals = self.fmri_data[self.fmri_data != 0]
+            else:
+                active_vals = self.fmri_data[self.fmri_data != 0] if isinstance(self.fmri_data, np.ndarray) else self.fmri_data[self.fmri_data != 0]
+            if isinstance(active_vals, torch.Tensor):
+                self.fmri_scale = float(active_vals.std()) if len(active_vals) > 0 else 1.0
+            else:
                 self.fmri_scale = float(np.std(active_vals)) if len(active_vals) > 0 else 1.0
-            print(f"fMRI active-voxel std (normalisation scale): {self.fmri_scale:.4f}", flush=True)
+        print(f"fMRI active-voxel std (normalisation scale): {self.fmri_scale:.4f}", flush=True)
 
+        # Store normalised fMRI range for thresholding during generation
+        normed = self.fmri_data / self.fmri_scale
+        self.fmri_min = float(normed.min())
+        self.fmri_max = float(normed.max())
 
         print(f"Statistics of fMRI data: max={self.fmri_data.max():.4f}, min={self.fmri_data.min():.4f}, mean={self.fmri_data.mean():.4f}, std={self.fmri_data.std():.4f}", flush=True)
+        print(f"Normalised fMRI range for thresholding: [{self.fmri_min:.4f}, {self.fmri_max:.4f}]", flush=True)        
+        print(f"Statistics of normalisaed fMRI data: max={normed.max():.4f}, min={normed.min():.4f}, mean={normed.mean():.4f}, std={normed.std():.4f}", flush=True)
         print(f"Statisics of the ANN activations: max={self.activations.max():.4f}, min={self.activations.min():.4f}, mean={self.activations.mean():.4f}, std={self.activations.std():.4f}", flush=True)
 
         if self.act_index_map is not None:
@@ -129,10 +141,7 @@ class PairedBrainAnnDataset(Dataset):
         return len(self.fmri_data)
 
     def __getitem__(self, idx):
-        if self.is_2d:
-            fmri = self.fmri_data[idx] / self.fmri_scale  # normalise to active-voxel std≈1
-        else:
-            fmri = self.fmri_data[idx]
+        fmri = self.fmri_data[idx] / self.fmri_scale  # normalise to active-voxel std≈1
         act_idx = self.act_index_map[idx] if self.act_index_map is not None else idx
         act = self.activations[act_idx]
         act = (act - self.act_mean) / (self.act_std + 1e-6)  # z-score per feature

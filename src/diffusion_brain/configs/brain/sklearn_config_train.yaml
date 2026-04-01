@@ -32,49 +32,15 @@ data:
   ann_model: "vit_b_16" #"resnet50" 
   ann_model_weights: "IMAGENET1K_SWAG_E2E_V1" #"IMAGENET1K_V2" # old interface "ResNet50_Weights.IMAGENET1K_V2"
   ann_activations_data_path: './src/diffusion_brain/data/ann_activations/'
-  layer_name: "encoder.layers.encoder_layer_11.mlp" #"avgpool"
+  layer_name: "avgpool" #"encoder.layers.encoder_layer_11.mlp" #"avgpool"
   roi: 5 #18 #10 #5 # do the correct indexing as described in roi_defs/streams.mgz.ctab
   roi_defs_dir: './src/diffusion_brain/data/roi_defs/'
   roi_file: "streams" #"HCP_MMP1" # can be streams or HCP_MMP1 or nsdgeneral
 
 # need to wire up the model arguments' with UNet class definition
 model:
-  name: gfdm-unet-1d-cond #dit #unet-diffusers #gfdm-unet #unet-diffusers # unet
-  #input_size: 32
-  num_classes: 10 # it needs to be removed later when refactoring diffusivity.py as in ann-brain case we have continuous conditioning vector and not class labels; 
-  c_in: 1
-  c_out: 1
-  time_dim: 256
-  #cross_attention_dim: 2048 # it should be equal to dimensionality of conditioning vector!
-  ######### dit############## depth=12, hidden_size=384, patch_size=8, num_heads=6
-  num_heads: 12
-  depth: 12
-  hidden_size: 768
-  ###########################
-  dropout_prob: 0.2 # label dropout in classifier-free training
-  remove_deep_conv: false
-  save_freq: 500
-  output_folder: './model_outputs/ann-brain/'
-  use_autoencoder: false
-  ae_save_path: './model_outputs/ann-brain/autoencoder/'
-  ae_name: 'ae_linear.pt'
-  ae_latent_dim: 1024
-  ae_epochs: 50
-  ae_lr: 1.e-4
-
-optim:
-  loss: mse
-  optim_name: adamw
-  weight_decay: 1.e-3
-  lr: 1.e-4 # for adam/optimiser
-  scheduler_name: onecycle
-  max_lr: 1.e-4
-
-  # for plateau:
-  # min_lr: 1e-6
-  # scheduler_mode: "min"
-  # factor: 0.7
-  # patience: 50
+  simple_ridge: false
+  
 
 train:
   steps: 10000 #2000 # train steps

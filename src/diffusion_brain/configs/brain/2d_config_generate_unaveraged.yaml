@@ -1,7 +1,8 @@
 wandb:
-  project_name: conditional-2d-diffusion-brain
+  project_name: generate-conditional-2d-diffusion-brain
 
-state: train
+state: generate
+seed: 42
 
 diffusion:
   diffusion_type: vp
@@ -34,23 +35,19 @@ model:
   name: unet-diffusers
   c_in: 1
   c_out: 1
+  time_dim: 256
   cond_seq_len: 8
   token_dim: 256
   cond_token_mode: "learned"
   num_classes: 1
   # UNet block configuration — 4 levels with cross-attention at 3 spatial scales
-  # block_out_channels: [64, 128, 256, 512]
-  # down_block_types: ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"]
-  # up_block_types: ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"]
-  ######### dit############## depth=12, hidden_size=384, patch_size=8, num_heads=6
-  num_heads: 12
-  depth: 12
-  hidden_size: 768
+  block_out_channels: [64, 128, 256, 512]
+  down_block_types: ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"]
+  up_block_types: ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"]
   ###########################
-  dropout_prob: 0.1
-  lambda_cond_sep: 0.0
-  save_freq: 5000
-  output_folder: './model_outputs/ann-brain/'
+  input_folder: './model_outputs/ann-brain/ann-brain-cluster' #-197972/'
+  run_id: 197972
+  which: best  # best final all
   ############# autoencoder settings for future use #############
   use_autoencoder: false
   ae_save_path: './model_outputs/ann-brain/autoencoder/'
@@ -67,28 +64,15 @@ optim:
   scheduler_name: onecycle
   max_lr: 1.e-4
 
-train:
-  resume_from: ~ #"./model_outputs/ann-brain/ann-brain-cluster-234018/checkpoint_step_40000.pth"
-  steps: 100000
-  batch_size: 8 # 8 for gpu3,4 32 for gpu5
-  dataset_size: 28455  # ~3x train samples (30000 total - 3*515 test = 28455)
-  num_workers: 4
-  histogram_freq: 1000
-  use_mixed_precision: false
-  gradient_accumulation_steps: 2
-  gradient_checkpointing: false
-  ema_decay: 0.999
-  ema_warmup_steps: 5000
-
 validation:
+  average_over_num_runs: 2 #10
   ode: false
-  eval_freq: 1000
   batch_size: 64 # 128 for gpu5
   n_steps: 100
   guidance_scale: 3.0
-  output_folder: '/outputs/ann-brain/'
+  output_folder: './outputs/generated_samples/ann-brain/'
   num_workers: 1
   label_to_generate: 1
-  debug_conditioning: true
-  thresholding: static # none / static / dynamic
+  final_model_num: 100000
+  thresholding: dynamic #static # none / static / dynamic
   dynamic_thresholding_percentile: 0.995

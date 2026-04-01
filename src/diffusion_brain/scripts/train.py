@@ -410,14 +410,14 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
         
         predicted_score = score_fn(x_t, t, encoder_hidden_states = encoder_hidden_states, class_labels=class_labels_arg).sample
     elif args.model.name == "gfdm-unet-1d-cond":
-        # Tokenize ANN conditioning for cross-attention, same as 2D model
-        if args.data.data_name == "ann-brain":
-            encoder_hidden_states = to_cond_tokens(masked_labels)
-            # GFDM UNet expects encoder_out as (B, C, T) — channels first
-            encoder_out = encoder_hidden_states.permute(0, 2, 1)
+        cond_mode = getattr(args.model, "cond_mode", "additive")
+        if cond_mode == "cross_attention" and args.data.data_name == "ann-brain":
+            # Cross-attention: tokenize ANN → (B, num_tokens, token_dim) → permute to (B, token_dim, num_tokens) for conv1d encoder_kv
+            encoder_out = encoder_hidden_states.permute(0, 2, 1).contiguous()
             predicted_score = score_fn(x_t, t, encoder_out=encoder_out)
         else:
-            predicted_score = score_fn(x_t, t, masked_labels.float())
+            # Additive conditioning: pass raw ANN vector directly
+            predicted_score = score_fn(x_t, t, cond=masked_labels.float())
     else:
         predicted_score = score_fn(x_t, t, masked_labels)
 
@@ -440,16 +440,26 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
     # lambda_cond_sep controls how strongly conditioning is encouraged; set to
     # 0.0 in the config to disable.
     lambda_cond_sep = float(getattr(args.model, "lambda_cond_sep", 0.0))
-    if lambda_cond_sep > 0.0 and args.data.data_name == "ann-brain" and args.model.name in ["unet-diffusers", "unet-diffusers-1d"]:
+    _use_cross_attn_1d = args.model.name == "gfdm-unet-1d-cond" and getattr(args.model, "cond_mode", "additive") == "cross_attention"
+    if lambda_cond_sep > 0.0 and args.data.data_name == "ann-brain" and (args.model.name in ["unet-diffusers", "unet-diffusers-1d"] or _use_cross_attn_1d):
         cond_tokens_sep = to_cond_tokens(label.float())
         uncond_tokens_sep = torch.zeros_like(cond_tokens_sep)
         # Detach x_t so backbone ResNet blocks receive no gradient from sep_loss.
         # Only K/V projections (cross-attn) and ANNTokenizer get gradient,
         # preventing the backbone from learning to cancel the signal.
         x_t_sep = x_t.detach()
-        pred_cond_sep = score_fn(x_t_sep, t, encoder_hidden_states=cond_tokens_sep, class_labels=None).sample
-        pred_uncond_sep = score_fn(x_t_sep, t, encoder_hidden_states=uncond_tokens_sep, class_labels=None).sample
-        if orig_shape is not None:
+        if _use_cross_attn_1d:
+            cond_enc = cond_tokens_sep.permute(0, 2, 1).contiguous()
+            uncond_enc = uncond_tokens_sep.permute(0, 2, 1).contiguous()
+            pred_cond_sep = score_fn(x_t_sep, t, encoder_out=cond_enc)
+            pred_uncond_sep = score_fn(x_t_sep, t, encoder_out=uncond_enc)
+        else:
+            pred_cond_sep = score_fn(x_t_sep, t, encoder_hidden_states=cond_tokens_sep, class_labels=None).sample
+            pred_uncond_sep = score_fn(x_t_sep, t, encoder_hidden_states=uncond_tokens_sep, class_labels=None).sample
+        if orig_len is not None:
+            pred_cond_sep = pred_cond_sep[..., :orig_len]
+            pred_uncond_sep = pred_uncond_sep[..., :orig_len]
+        elif orig_shape is not None:
             h, w = orig_shape
             pred_cond_sep = pred_cond_sep[..., :h, :w]
             pred_uncond_sep = pred_uncond_sep[..., :h, :w]
@@ -586,7 +596,7 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
         **cond_diagnostics,
     }
 
-def save_checkpoint(directory, model, optimizer, lr_scheduler, step, best_val_r_score, ann_tokenizer=None, ema=None, suffix=""):
+def save_checkpoint(directory, model, optimizer, lr_scheduler, step, best_val_r_score, ann_tokenizer=None, ema=None, suffix="", fmri_min=None, fmri_max=None):
     """Save a full training checkpoint that can be used to resume training.
 
     Args:
@@ -612,6 +622,11 @@ def save_checkpoint(directory, model, optimizer, lr_scheduler, step, best_val_r_
         checkpoint["ann_tokenizer_state_dict"] = ann_tokenizer.state_dict()
     if ema is not None:
         checkpoint["ema_state_dict"] = ema.state_dict()
+
+    # Save normalised fMRI data range for thresholding at generation time
+    if fmri_min is not None and fmri_max is not None:
+        checkpoint["fmri_min"] = fmri_min
+        checkpoint["fmri_max"] = fmri_max
 
     fname = f"checkpoint_{suffix}.pth" if suffix else "checkpoint.pth"
     torch.save(checkpoint, os.path.join(directory, fname))
@@ -845,7 +860,12 @@ def train(args):
     # get dataloaders once for autoencoder training and conditioning shape
     train_dataloader, valid_dataloader = get_dataloader(args)
 
-    # for now a little brittle re-writing of args as every ROI and every ANN layer will have different dimensions 
+    # Store normalised fMRI data range for thresholding during generation
+    train_ds = train_dataloader.dataset
+    args.data.fmri_min = getattr(train_ds, "fmri_min", None)
+    args.data.fmri_max = getattr(train_ds, "fmri_max", None)
+
+    # for now a little brittle re-writing of args as every ROI and every ANN layer will have different dimensions
     # and we need to set them here before we create the model;
     #  TODO: make it more elegant later
     if args.data.data_name == "ann-brain":
@@ -936,7 +956,8 @@ def train(args):
     # Create ANNTokenizer for learned conditioning (replaces manual chunk/repeat)
     ann_tokenizer = None
     cond_token_mode = getattr(args.model, "cond_token_mode", "learned")
-    if args.data.data_name == "ann-brain" and args.model.name in ["unet-diffusers", "gfdm-unet-1d-cond"] and cond_token_mode == "learned":
+    _1d_cross_attn = args.model.name == "gfdm-unet-1d-cond" and getattr(args.model, "cond_mode", "additive") == "cross_attention"
+    if args.data.data_name == "ann-brain" and (args.model.name == "unet-diffusers" or _1d_cross_attn) and cond_token_mode == "learned":
         ann_dim = args.model.ann_dim
         num_tokens = max(1, int(getattr(args.model, "cond_seq_len", 8)))
         token_dim = int(getattr(args.model, "token_dim", 256))
@@ -1111,7 +1132,8 @@ def train(args):
                 best_val_r_score = current_val_r_score
                 directory_to_save = f"{args.model.output_folder}/{args.jobid}"
                 save_checkpoint(directory_to_save, model, optimizer, lr_scheduler, step, best_val_r_score,
-                                ann_tokenizer=ann_tokenizer, ema=ema, suffix="best")
+                                ann_tokenizer=ann_tokenizer, ema=ema, suffix="best",
+                                fmri_min=getattr(args.data, "fmri_min", None), fmri_max=getattr(args.data, "fmri_max", None))
                 print(f"New best model saved at step {step} with r-score: {best_val_r_score:.4f}", flush=True)
                 log_wandb({"validation/best_r_score": best_val_r_score, "validation/best_step": step}, step=step)
 
@@ -1123,12 +1145,14 @@ def train(args):
         if step % args.model.save_freq == 0 and step > 0:
             directory_to_save = f"{args.model.output_folder}/{args.jobid}"
             save_checkpoint(directory_to_save, model, optimizer, lr_scheduler, step, best_val_r_score,
-                            ann_tokenizer=ann_tokenizer, ema=ema, suffix=f"step_{step}")
+                            ann_tokenizer=ann_tokenizer, ema=ema, suffix=f"step_{step}",
+                            fmri_min=getattr(args.data, "fmri_min", None), fmri_max=getattr(args.data, "fmri_max", None))
 
     # save the final model
     directory_to_save = f"{args.model.output_folder}/{args.jobid}"
     save_checkpoint(directory_to_save, model, optimizer, lr_scheduler, args.train.steps - 1, best_val_r_score,
-                    ann_tokenizer=ann_tokenizer, ema=ema, suffix="final")
+                    ann_tokenizer=ann_tokenizer, ema=ema, suffix="final",
+                    fmri_min=getattr(args.data, "fmri_min", None), fmri_max=getattr(args.data, "fmri_max", None))
     
     # Cleanup diagnostics
     if crossattn_diag is not None:

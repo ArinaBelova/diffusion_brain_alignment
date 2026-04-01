@@ -42,20 +42,24 @@ model:
   num_classes: 1 # reserved for future subject-identity conditioning
   c_in: 1
   c_out: 1
-  time_dim: 256
+  cond_mode: "additive" # "additive" (ANN added to time emb) or "cross_attention" (ANNTokenizer → encoder_out); only for gfdm-unet-1d-cond
+  cond_proj_type: "linear" # "linear" (single projection) or "mlp" (2-layer with SiLU); only for additive cond_mode
+  time_embed_dim: ~ #1024 # ~ dimension of time embedding; only for gfdm-unet-1d-cond
+  #cross_attention_dim: 768 # set dynamically from ANN activation dim
+  ############ for cross-attention conditioning ############
   cond_seq_len: 8 # num_tokens for ANNTokenizer
   token_dim: 256 # dimension of each token produced by ANNTokenizer
   cond_token_mode: "learned" # "learned" uses ANNTokenizer; legacy: "chunk", "repeat"
-  #cross_attention_dim: 768 # set dynamically from ANN activation dim
+  ##########################################################
   ######### dit############## depth=12, hidden_size=384, patch_size=8, num_heads=6
   num_heads: 12
   depth: 12
   hidden_size: 768
   ###########################
-  dropout_prob: 0.2 # label dropout in classifier-free training
-  remove_deep_conv: false
+  dropout_prob: 0.1 # label dropout in classifier-free training
   save_freq: 5000
   output_folder: './model_outputs/ann-brain/'
+  ############# autoencoder settings for future use #############
   use_autoencoder: false
   ae_save_path: './model_outputs/ann-brain/autoencoder/'
   ae_name: 'ae_linear.pt'
@@ -79,13 +83,15 @@ optim:
 
 train:
   steps: 100000 #2000 # train steps
-  batch_size: 16 # 64 # train batch size, may need to decrease it for the larger models and increase for smaller ones
+  batch_size: 32 # 64 # train batch size, may need to decrease it for the larger models and increase for smaller ones
   dataset_size: 9485 # 10000 - 515 images as train
   num_workers: 4
   histogram_freq: 100 # frequency of logging loss histogram to wandb, set to 0 to disable
   use_mixed_precision: false #true  # Enable bfloat16 training
   gradient_accumulation_steps: 2 #8  # effective batch size = 1 * 8 = 8
   gradient_checkpointing: false
+  ema_decay: 0.999  # EMA decay rate for shadow weights (0.0 to disable); used for validation/generation
+  ema_warmup_steps: 5000  # ramp EMA decay from 0 to ema_decay over this many optimizer steps
   resume_from: ~
 
 # may need to combine this with either diffusion or validation or both
@@ -98,9 +104,12 @@ train:
 validation:
   ode: false
   eval_freq: 1000
-  batch_size: 128 #32 #256 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
+  batch_size: 64 #128 #32 #256 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
   n_steps: 100 # SDE steps
   guidance_scale: 3.0 #0.8
   output_folder: '/outputs/ann-brain/'
   num_workers: 1
   label_to_generate: 1 # it needs to be removed later when refactoring diffusivity.py as in ann-brain case we have continuous conditioning vector and not class labels;
+  debug_conditioning: true
+  thresholding: static # none / static / dynamic; static clips to fMRI data [min, max], dynamic uses per-sample percentile
+  dynamic_thresholding_percentile: 0.995 # only used when thresholding=dynamic

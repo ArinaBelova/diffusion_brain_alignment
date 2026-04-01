@@ -61,7 +61,29 @@ def train(train_activations_dataset, train_fmri_dataset, args):
     print("Train activations dataset shape: ", train_activations_dataset.shape, flush=True)
     print("Train fMRI dataset shape: ", train_fmri_dataset.shape, flush=True)
 
-    clf = RidgeCV(alphas=alphas, scoring="r2").fit(train_activations_dataset, train_fmri_dataset)
+    if args.model.simple_ridge:
+        clf = RidgeCV(alphas=alphas, scoring="r2").fit(train_activations_dataset, train_fmri_dataset)
+    else:
+        from sklearn.metrics import make_scorer
+
+        def pearson_scorer(y_true, y_pred):
+            """Mean Pearson r across voxels (or single voxel)."""
+            if y_true.ndim == 1:
+                return pearsonr(y_true, y_pred)[0]
+            # For multi-output: mean correlation across voxels
+            rs = [pearsonr(y_true[:, i], y_pred[:, i])[0] 
+                for i in range(y_true.shape[1])]
+            return np.mean(rs)
+
+        pearson_scoring = make_scorer(pearson_scorer)
+
+        clf = RidgeCV(
+            alphas=alphas,
+            scoring=pearson_scoring,
+            alpha_per_target=True
+        )
+        clf.fit(train_activations_dataset, train_fmri_dataset)
+    
     # , scoring="r2"
     print(f"Scoring used: {clf.scoring}")
     # clf = FracRidgeRegressorCV().fit(train_activations_dataset, train_fmri_dataset, frac_grid=np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]))
@@ -73,9 +95,16 @@ def train(train_activations_dataset, train_fmri_dataset, args):
     print("Evaluating on training data...", flush=True)
     
     final_score = clf.score(train_activations_dataset, train_fmri_dataset)
+    # Also compute Pearson r per voxel (same metric as diffusion model evaluation)
+    train_pred = clf.predict(train_activations_dataset)
+    train_r_per_voxel = np.array([
+        pearsonr(train_fmri_dataset[:, i], train_pred[:, i])[0]
+        for i in range(train_fmri_dataset.shape[1])
+    ])
     print("Evaluation completed.", flush=True)
-    print(f"Best Alpha: {clf.alpha_}", flush=True)
-    print(f"Score: {final_score}", flush=True)
+    print(f"Best Alpha and length of alphas: {clf.alpha_}, {len(clf.alpha_)}", flush=True)
+    print(f"Train R^2 (sklearn, flattened): {final_score}", flush=True)
+    print(f"Train mean Pearson r (per voxel): {np.mean(train_r_per_voxel):.4f}", flush=True)
 
     return clf
 
@@ -88,12 +117,16 @@ def validate_and_visualise(clf, true_activations_dataset, true_fmri_dataset, arg
     # validate and display the results
     print("Generating predicted fMRI data from activations...", flush=True)
     print("Shape of activations dataset:", true_activations_dataset.shape, flush=True)
-    fmri_predicted = clf.predict(true_activations_dataset) 
-    # print("Generated fmri samples shape: ", fmri_predicted.shape, flush=True)
-    # print("Generated fmri samples type: ", type(fmri_predicted), flush=True)
-    
-    score_test = clf.score(true_activations_dataset, true_fmri_dataset)
-    print("Score on the test data with TRUE FMRI: ", score_test, flush=True)
+
+    fmri_predicted = clf.predict(true_activations_dataset)  # handles intercept correctly for both modes
+    if args.model.simple_ridge:
+        score_test = clf.score(true_activations_dataset, true_fmri_dataset)
+        print("R^2 score on test data: ", score_test, flush=True)
+    else:
+        ss_res = np.sum((true_fmri_dataset - fmri_predicted) ** 2, axis=0)
+        ss_tot = np.sum((true_fmri_dataset - true_fmri_dataset.mean(axis=0)) ** 2, axis=0)
+        r2_scores = 1 - ss_res / ss_tot
+        print("Mean R^2 score across voxels on test data: ", np.mean(r2_scores), flush=True)
 
     ######## 1D Visualisation of predicted and true fMRI data for the test set ##########
     if args.data.is_2d:

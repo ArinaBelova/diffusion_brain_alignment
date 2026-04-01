@@ -6,7 +6,7 @@ import numpy as np
 
 from diffusion_brain.utils.diffusivity import generate_samples, get_diffusion
 from diffusion_brain.utils.setup import parse_args_and_setup_wandb
-from diffusion_brain.utils.visualise import visualise_and_save_results, pyplot_brain
+from diffusion_brain.utils.visualise import visualise_and_save_results, pyplot_brain, fmri_to_wandb_image
 from diffusion_brain.models import set_model, ANNTokenizer
 from diffusion_brain.models.autoencoder import LinearAutoencoder, get_linear_autoencoder
 from diffusion_brain.data_utils import get_dataloader
@@ -120,6 +120,11 @@ def generate_sample_loop(args):
     _, gen_dataloader = get_dataloader(args)
     input_size, cross_attention_dim = _infer_model_dims_from_dataloader(gen_dataloader)
     args.model.input_size = tuple(input_size) # was int(input_size)
+
+    # fmri_min/fmri_max for thresholding: prefer checkpoint (train set), fallback to current dataset
+    gen_ds = gen_dataloader.dataset
+    args.data.fmri_min = getattr(gen_ds, "fmri_min", None)
+    args.data.fmri_max = getattr(gen_ds, "fmri_max", None)
     
     # Apply the same conditioning tokenization as in training
     ann_dim = int(cross_attention_dim)
@@ -177,7 +182,8 @@ def generate_sample_loop(args):
 
     # Create ANNTokenizer if using learned conditioning
     ann_tokenizer = None
-    if cond_token_mode == "learned" and args.model.name in ["unet-diffusers", "gfdm-unet-1d-cond"]:
+    _1d_cross_attn = args.model.name == "gfdm-unet-1d-cond" and getattr(args.model, "cond_mode", "additive") == "cross_attention"
+    if cond_token_mode == "learned" and (args.model.name == "unet-diffusers" or _1d_cross_attn):
         ann_tokenizer = ANNTokenizer(ann_dim=ann_dim, num_tokens=num_tokens, token_dim=token_dim).to(DEVICE)
         print(f"ANNTokenizer created for generation: {ann_dim} -> {num_tokens} tokens x {token_dim}-dim")
 
@@ -226,14 +232,21 @@ def generate_sample_loop(args):
                     print(f"WARNING: ANNTokenizer checkpoint not found at {tokenizer_path}")
                 ann_tokenizer.eval()
 
+        # Load normalised fMRI range from checkpoint (train set) for thresholding
+        if "fmri_min" in checkpoint and "fmri_max" in checkpoint:
+            args.data.fmri_min = checkpoint["fmri_min"]
+            args.data.fmri_max = checkpoint["fmri_max"]
+            print(f"Loaded fMRI thresholding range from checkpoint: [{args.data.fmri_min:.4f}, {args.data.fmri_max:.4f}]", flush=True)
+
         model.eval()  # set to eval mode for generation
         print("model device: ", next(model.parameters()).device)
         print("len dataloader.dataset is ", len(gen_dataloader.dataset))
 
+
         generated_samples_list = []
         true_fmri_list = []
-        
-        for idx, (true_fmri, cond) in enumerate(gen_dataloader): 
+
+        for idx, (true_fmri, cond) in enumerate(gen_dataloader):
             cond = cond.to(DEVICE)
             
             print(f"Generating samples with guidance strength {args.validation.guidance_scale} for batch {idx+1} out of {len(gen_dataloader)}...", flush=True)   
@@ -282,6 +295,14 @@ def main():
     args = parse_args_and_setup_wandb()
     print("ARGS: ", args)
     
+    ### seed the generation ####
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    np.random.seed(args.seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    #####
+
     wandb.define_metric("model_step")
     wandb.define_metric("*", step_metric="model_step")
     if args.data.data_name == "ann-brain":
@@ -303,9 +324,12 @@ def main():
             if not args.data.is_2d:
                 # I want to see non-interpolated on pycortex flatmap images!
                 one_generated_sample_2d, _ = signal_to_2d(args, one_signal_to_transform=generated_samples_per_model[0])
-                one_fmri_signal_2d, _ = signal_to_2d(args, one_signal_to_transform=generated_samples_per_model[0])
-                wandb.log({f"true_fmri_data": wandb.Image(one_fmri_signal_2d * 255),
-                           f"generated_data": wandb.Image(one_generated_sample_2d * 255)})
+                one_fmri_signal_2d, _ = signal_to_2d(args, one_signal_to_transform=true_fmri[0])
+
+                wandb.log({
+                    "true_fmri_data": fmri_to_wandb_image(one_fmri_signal_2d, title="True fMRI"),
+                    "generated_data": fmri_to_wandb_image(one_generated_sample_2d, title="Generated"),
+                })
 
             # no f-string in the name as i want to have all the models in the slide bar in wandb
             #pyplot_brain(generated_samples_per_model.mean(axis=0), args=args, savename=f"generated_samples_mean", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png', step_num=step_num)
