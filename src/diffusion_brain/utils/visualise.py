@@ -109,8 +109,8 @@ def pyplot_brain(fsavg_data, savename, figpath, args, save_type='png', max_cmap_
         boundar = np.nanmax(np.abs(fsavg_data))
     else:
         boundar = np.nanmax(np.abs(max_cmap_val))
-
-    vert = cortex.dataset.Vertex(full_brain_data, "fsaverage", cmap='RdBu_r', vmin=-boundar, vmax=boundar)    
+   
+    vert = cortex.dataset.Vertex(full_brain_data, "fsaverage", cmap='RdBu_r', vmin=-boundar, vmax=boundar)
     flatmap = cortex.quickflat.make_figure(vert, height=480, with_colorbar=1, with_rois=False)
     
     fig = plt.gcf()
