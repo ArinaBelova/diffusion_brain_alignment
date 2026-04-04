@@ -130,25 +130,30 @@ def generate_sample_loop(args):
     ann_dim = int(cross_attention_dim)
     args.model.ann_dim = ann_dim
     cond_token_mode = getattr(args.model, "cond_token_mode", "learned")
-    num_tokens = max(1, int(getattr(args.model, "cond_seq_len", 8)))
-    token_dim = int(getattr(args.model, "token_dim", 256))
 
-    if cond_token_mode == "learned":
-        args.model.cross_attention_dim = token_dim
-        print(
-            f"Condition tokenization: LEARNED | ANN dim {ann_dim} -> "
-            f"ANNTokenizer({num_tokens} tokens x {token_dim}-dim), "
-            f"cross_attention_dim={token_dim}",
-            flush=True,
-        )
+    if args.model.condition_mode == "additive":
+        print(f"Using additive conditioning, ANN dim {ann_dim} will be added to time embedding")
+        args.model.cross_attention_dim = ann_dim
     else:
-        cond_seq_len = num_tokens
-        if cond_token_mode == "chunk" and cond_seq_len > 1 and ann_dim % cond_seq_len == 0:
-            args.model.cross_attention_dim = ann_dim // cond_seq_len
-            print(f"Condition tokenization: chunk | ANN dim {ann_dim} -> seq_len {cond_seq_len} x token_dim {args.model.cross_attention_dim}", flush=True)
+        num_tokens = max(1, int(getattr(args.model, "cond_seq_len", 8)))
+        token_dim = int(getattr(args.model, "token_dim", 256))
+
+        if cond_token_mode == "learned":
+            args.model.cross_attention_dim = token_dim
+            print(
+                f"Condition tokenization: LEARNED | ANN dim {ann_dim} -> "
+                f"ANNTokenizer({num_tokens} tokens x {token_dim}-dim), "
+                f"cross_attention_dim={token_dim}",
+                flush=True,
+            )
         else:
-            args.model.cross_attention_dim = ann_dim
-            print(f"Condition tokenization: repeat | seq_len {cond_seq_len}, token_dim {args.model.cross_attention_dim}", flush=True)
+            cond_seq_len = num_tokens
+            if cond_token_mode == "chunk" and cond_seq_len > 1 and ann_dim % cond_seq_len == 0:
+                args.model.cross_attention_dim = ann_dim // cond_seq_len
+                print(f"Condition tokenization: chunk | ANN dim {ann_dim} -> seq_len {cond_seq_len} x token_dim {args.model.cross_attention_dim}", flush=True)
+            else:
+                args.model.cross_attention_dim = ann_dim
+                print(f"Condition tokenization: repeat | seq_len {cond_seq_len}, token_dim {args.model.cross_attention_dim}", flush=True)
 
     args.model.input_folder = args.model.input_folder + "-" + str(args.model.run_id) 
 
@@ -182,10 +187,14 @@ def generate_sample_loop(args):
 
     # Create ANNTokenizer if using learned conditioning
     ann_tokenizer = None
-    _1d_cross_attn = args.model.name == "gfdm-unet-1d-cond" and getattr(args.model, "cond_mode", "additive") == "cross_attention"
-    if cond_token_mode == "learned" and (args.model.name == "unet-diffusers" or _1d_cross_attn):
+    _1d_cross_attn = args.model.name == "gfdm-unet-1d-cond" and getattr(args.model, "condition_mode", "additive") == "cross_attention"
+    _condition_mode = getattr(args.model, "condition_mode", "cross_attention")
+    _needs_tokenizer = (args.model.name == "unet-diffusers" and _condition_mode != "additive") or _1d_cross_attn
+    if cond_token_mode == "learned" and _needs_tokenizer:
         ann_tokenizer = ANNTokenizer(ann_dim=ann_dim, num_tokens=num_tokens, token_dim=token_dim).to(DEVICE)
         print(f"ANNTokenizer created for generation: {ann_dim} -> {num_tokens} tokens x {token_dim}-dim")
+    elif args.model.name == "unet-diffusers" and _condition_mode == "additive":
+        print(f"Additive conditioning mode: ANNTokenizer not needed for generation")
 
     for model_file in model_files:
         print("Setting up the model: ", model_file)
@@ -272,6 +281,17 @@ def generate_sample_loop(args):
             
             generated_samples_one_model_one_cond = generated_samples_one_model_one_cond.squeeze(1)
             print("Dimension of generaetd samples: ", generated_samples_one_model_one_cond.shape, flush=True)
+
+            # Log a few sample images to wandb per batch for visual monitoring
+            # if idx == 0:
+            #     n_preview = min(4, generated_samples_one_model_one_cond.shape[0])
+            #     preview_images = {}
+            #     for i in range(n_preview):
+            #         gen_np = generated_samples_one_model_one_cond[i].cpu().numpy()
+            #         true_np = true_fmri[i].squeeze().cpu().numpy()
+            #         preview_images[f"preview/generated_{i}"] = fmri_to_wandb_image(gen_np, title=f"Generated {i}")
+            #         preview_images[f"preview/true_{i}"] = fmri_to_wandb_image(true_np, title=f"True {i}")
+            #     wandb.log(preview_images)
 
             generated_samples_list.append(generated_samples_one_model_one_cond.cpu())
             true_fmri_list.append(true_fmri.cpu())   

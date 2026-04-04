@@ -8,7 +8,6 @@ import re
 import torch
 import nibabel as nb
 from filelock import FileLock
-import rsatoolbox
 import cortex
 
 import scipy
@@ -368,24 +367,39 @@ def signal_to_2d(args, **kwargs):
     x_grid = ((x - x.min()) / (x.max() - x.min() + 1e-8) * (grid_size - 1)).astype(int)
     y_grid = ((y - y.min()) / (y.max() - y.min() + 1e-8) * (grid_size - 1)).astype(int)
 
-    print(f"Grid size: {grid_size}x{grid_size}, Total points: {len(pts_roi)}, Unique grid points: {len(set(zip(x_grid, y_grid)))}")
+    n_unique = len(set(zip(x_grid, y_grid)))
+    n_collisions = len(pts_roi) - n_unique
+    print(f"Grid size: {grid_size}x{grid_size}, Total points: {len(pts_roi)}, "
+          f"Unique grid points: {n_unique}, Collisions: {n_collisions}")
+
+    # Precompute per-pixel count for averaging colliding vertices.
+    # np.add.at is unbuffered so it correctly accumulates duplicates.
+    count_2d = np.zeros((grid_size, grid_size), dtype=np.float32)
+    np.add.at(count_2d, (y_grid, x_grid), 1)
+
+    # Boolean mask of active pixels (>0 vertices mapped here) — computed
+    # once from the grid mapping, independent of any sample's values.
+    active_mask = count_2d > 0
+
     data_roi_2d = []
-
     for sample in range(data_roi.shape[0]):
-        values = data_roi[sample] #10k values for each sample
-        # Create matrix
-        matrix_2d = np.full((grid_size, grid_size), 0, dtype=np.float32)
+        values = data_roi[sample]
+        matrix_2d = np.zeros((grid_size, grid_size), dtype=np.float32)
+        np.add.at(matrix_2d, (y_grid, x_grid), values)
+        matrix_2d[active_mask] /= count_2d[active_mask]
 
-        matrix_2d[y_grid, x_grid] = values
-
-        # Remove vertical NaN bands between hemispheres by cropping rows with all NaN
-        valid_rows = ~np.all(matrix_2d == 0, axis=0)
-        if valid_rows.any():
-            matrix_2d = matrix_2d[:, valid_rows]
+        # Remove all-zero columns (gap between hemispheres)
+        valid_cols = ~np.all(matrix_2d == 0, axis=0)
+        if valid_cols.any():
+            matrix_2d = matrix_2d[:, valid_cols]
 
         data_roi_2d.append(matrix_2d)
 
-    locations_roi = np.where(data_roi_2d[0] != 0)
+    # Active pixel locations from the geometry, not from sample values
+    # (avoids missing pixels where sample 0 happens to be exactly zero)
+    valid_cols_mask = ~np.all(count_2d == 0, axis=0)
+    cropped_active = active_mask[:, valid_cols_mask]
+    locations_roi = np.where(cropped_active)
 
     return np.array(data_roi_2d)[:, None, :, :], locations_roi
 

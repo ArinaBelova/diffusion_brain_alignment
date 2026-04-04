@@ -42,7 +42,7 @@ model:
   num_classes: 1 # reserved for future subject-identity conditioning
   c_in: 1
   c_out: 1
-  cond_mode: "additive" # "additive" (ANN added to time emb) or "cross_attention" (ANNTokenizer → encoder_out); only for gfdm-unet-1d-cond
+  condition_mode: "additive" # "additive" (ANN added to time emb) or "cross_attention" (ANNTokenizer → encoder_out); only for gfdm-unet-1d-cond
   cond_proj_type: "linear" # "linear" (single projection) or "mlp" (2-layer with SiLU); only for additive cond_mode
   time_embed_dim: ~ #1024 # ~ dimension of time embedding; only for gfdm-unet-1d-cond
   #cross_attention_dim: 768 # set dynamically from ANN activation dim

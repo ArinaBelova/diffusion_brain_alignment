@@ -22,7 +22,7 @@ data:
   data_name: ann-brain
   is_2d: true
   grid_resolution_2d: 1.0 # in mm, for 2d case only, it will determine the grid size based on the bounding box of the ROI vertices;
-  resize_to_multiple: 64 # must match training config
+  resize_to_multiple: 64 # must match training config (236854 was trained with 64)
   images_data_path: './src/diffusion_brain/data/data_coco/'
   behav_data_root: './src/diffusion_brain/data/behav/'
   subj: "subj01"
@@ -41,19 +41,20 @@ model:
   c_in: 1
   c_out: 1
   time_dim: 256
+  condition_mode: "cross_attention" #"additive" # "additive" adds the ANN vector to the time embedding, "cross_attention" projects the ANN vector to cross-attention tokens by ANNTokenizer; only relevant for unet-diffusers and gfdm-unet-1d-cond
   cond_token_mode: "learned" # must match training config
   cond_seq_len: 8 # num_tokens for ANNTokenizer
   token_dim: 256 # dimension of each token produced by ANNTokenizer
-  num_classes: 1
+  num_classes: 8  # must match training config (num_identities for subject embedding)
   # cross_attention_dim: 2048 # it should be equal to dimensionality of conditioning vector! for now it's specifically re-written in the scripts
   # UNet block config — must match training config
   block_out_channels: [64, 128, 256, 512]
-  down_block_types: ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"]
-  up_block_types: ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"]
+  down_block_types: ["DownBlock2D", "DownBlock2D", "DownBlock2D", "DownBlock2D"] # ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"]
+  up_block_types: ["UpBlock2D", "UpBlock2D", "UpBlock2D", "UpBlock2D"] # ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"]
   remove_deep_conv: false
   input_folder: './model_outputs/ann-brain/ann-brain-cluster' #-197972/'
   run_id: 197972
-  which: best  # best final all
+  which: "40000" #best  # best final all
   use_autoencoder: false
   ae_save_path: './model_outputs/ann-brain/autoencoder/'
   ae_name: 'ae_linear'
@@ -62,7 +63,7 @@ model:
   ae_lr: 1.e-4
 
 validation:
-  average_over_num_runs: 2 #10
+  average_over_num_runs: 1 #2 #10
   ode: false
   batch_size: 64 #128 #64
   n_steps: 100 #100
@@ -71,5 +72,5 @@ validation:
   output_folder: './outputs/generated_samples/ann-brain/'
   num_workers: 1
   final_model_num: 100000
-  thresholding: dynamic #static # none / static / dynamic; static clips to fMRI data [min, max], dynamic uses per-sample percentile
+  thresholding: static #dynamic #static # none / static / dynamic; static clips to fMRI data [min, max], dynamic uses per-sample percentile
   dynamic_thresholding_percentile: 0.995 # only used when thresholding=dynamic

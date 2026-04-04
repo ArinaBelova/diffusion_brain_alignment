@@ -16,7 +16,7 @@ data:
   is_2d: true
   fmri_dataset_variant: "unaveraged"  # use full repetitions (3x per image) instead of averaged betas
   grid_resolution_2d: 1.0
-  resize_to_multiple: 64
+  resize_to_multiple: 8 #64
   images_data_path: './src/diffusion_brain/data/data_coco/'
   behav_data_root: './src/diffusion_brain/data/behav/'
   subj: "subj01"
@@ -34,21 +34,23 @@ model:
   name: unet-diffusers
   c_in: 1
   c_out: 1
+  condition_mode: "additive" # "additive" adds the ANN vector to the time embedding, "cross_attention" projects the ANN vector to cross-attention tokens by ANNTokenizer; only relevant for unet-diffusers and gfdm-unet-1d-cond
+  dropout_prob: 0.1
+  lambda_cond_sep: 0.0
+  ####### cross-attention-conditioning-config ###############
   cond_seq_len: 8
   token_dim: 256
   cond_token_mode: "learned"
-  num_classes: 1
+  num_classes: 8
   # UNet block configuration — 4 levels with cross-attention at 3 spatial scales
-  # block_out_channels: [64, 128, 256, 512]
-  # down_block_types: ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"]
-  # up_block_types: ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"]
+  block_out_channels: [64, 128, 256, 512]
+  down_block_types: ["DownBlock2D", "DownBlock2D", "DownBlock2D", "DownBlock2D"] # ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"]
+  up_block_types: ["UpBlock2D", "UpBlock2D", "UpBlock2D", "UpBlock2D"] # ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"]
   ######### dit############## depth=12, hidden_size=384, patch_size=8, num_heads=6
   num_heads: 12
   depth: 12
   hidden_size: 768
   ###########################
-  dropout_prob: 0.1
-  lambda_cond_sep: 0.0
   save_freq: 5000
   output_folder: './model_outputs/ann-brain/'
   ############# autoencoder settings for future use #############
@@ -70,25 +72,25 @@ optim:
 train:
   resume_from: ~ #"./model_outputs/ann-brain/ann-brain-cluster-234018/checkpoint_step_40000.pth"
   steps: 100000
-  batch_size: 8 # 8 for gpu3,4 32 for gpu5
+  batch_size: 16 # 8 for gpu3,4 32 for gpu5
   dataset_size: 28455  # ~3x train samples (30000 total - 3*515 test = 28455)
   num_workers: 4
   histogram_freq: 1000
   use_mixed_precision: false
   gradient_accumulation_steps: 2
   gradient_checkpointing: false
-  ema_decay: 0.999
-  ema_warmup_steps: 5000
+  ema_decay: 0.9999
+  ema_warmup_steps: 8000
 
 validation:
   ode: false
-  eval_freq: 1000
-  batch_size: 64 # 128 for gpu5
+  eval_freq: 10000
+  batch_size: 128 #64 # 128 for gpu5
   n_steps: 100
-  guidance_scale: 3.0
+  guidance_scale: 5.0
   output_folder: '/outputs/ann-brain/'
   num_workers: 1
   label_to_generate: 1
-  debug_conditioning: true
-  thresholding: static # none / static / dynamic
+  debug_conditioning: false
+  thresholding: none # none / static / dynamic
   dynamic_thresholding_percentile: 0.995

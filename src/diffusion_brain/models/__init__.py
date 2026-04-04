@@ -3,6 +3,7 @@ from diffusion_brain.models.dit import DiT
 from diffusion_brain.models.gfdm_models.unet import GFDM_UNetModel
 from diffusion_brain.models.gfdm_models.cond_unet_1d import GFDM_UNet1DConditional
 from diffusion_brain.models.mlp import ToyDiffusionMLP
+from diffusion_brain.models.additive_cond_unet_2d import UNet2DAdditiveConditionModel
 
 import torch
 import torch.nn as nn
@@ -100,27 +101,55 @@ def set_model(args):
                     label_dim=args.model.cross_attention_dim,) # for continuous labels, we can just use an MLP to embed them into the same space as timestep embeddings)    
     elif args.model.name == "unet-diffusers":
         print("Setting UNet model from diffusers library")
-        # ANN conditioning goes exclusively through cross-attention (via ANNTokenizer).
-        # The time-embedding / class_embed slot is deliberately left free for future
-        # discrete subject-identity conditioning (nn.Embedding added to time embedding).
 
         # Read block config from yaml, with backwards-compatible defaults.
         block_out_channels = tuple(getattr(args.model, "block_out_channels", (64, 128, 256)))
-        down_block_types = tuple(getattr(args.model, "down_block_types", (
+        down_block_types = list(getattr(args.model, "down_block_types", (
             "DownBlock2D",
             "DownBlock2D",
             "CrossAttnDownBlock2D",
         )))
-        up_block_types = tuple(getattr(args.model, "up_block_types", (
+        up_block_types = list(getattr(args.model, "up_block_types", (
             "CrossAttnUpBlock2D",
             "UpBlock2D",
             "UpBlock2D",
         )))
 
+        # Swap block types based on condition_mode:
+        #   additive       → strip CrossAttn blocks (no cross-attention needed)
+        #   cross_attention → ensure CrossAttn blocks where yaml specifies them
+        _CROSS_TO_PLAIN = {
+            "CrossAttnDownBlock2D": "DownBlock2D",
+            "CrossAttnUpBlock2D": "UpBlock2D",
+        }
+        _PLAIN_TO_CROSS = {v: k for k, v in _CROSS_TO_PLAIN.items()}
+
+        condition_mode = getattr(args.model, "condition_mode", "cross_attention")
+        # Default mid block: cross-attention for cross_attention mode, plain for additive
+        mid_block_type = "UNetMidBlock2DCrossAttn"
+
+        if condition_mode == "additive":
+            down_block_types = [_CROSS_TO_PLAIN.get(b, b) for b in down_block_types]
+            up_block_types = [_CROSS_TO_PLAIN.get(b, b) for b in up_block_types]
+            mid_block_type = "UNetMidBlock2D"
+        elif condition_mode == "cross_attention":
+            # If the yaml has plain blocks but condition_mode is cross_attention,
+            # restore them. This lets the same yaml work with both modes via
+            # --override model.condition_mode=cross_attention
+            down_block_types = [_PLAIN_TO_CROSS.get(b, b) if i > 0 else b
+                                for i, b in enumerate(down_block_types)]
+            up_block_types = [_PLAIN_TO_CROSS.get(b, b) if i < len(up_block_types) - 1 else b
+                              for i, b in enumerate(up_block_types)]
+
+        down_block_types = tuple(down_block_types)
+        up_block_types = tuple(up_block_types)
+
         assert len(block_out_channels) == len(down_block_types) == len(up_block_types), (
             f"block_out_channels ({len(block_out_channels)}), down_block_types "
             f"({len(down_block_types)}), and up_block_types ({len(up_block_types)}) must have equal length"
         )
+        print(f"  condition_mode:     {condition_mode}")
+        print(f"  mid_block_type:     {mid_block_type}")
         print(f"  block_out_channels: {block_out_channels}")
         print(f"  down_block_types:   {list(down_block_types)}")
         print(f"  up_block_types:     {list(up_block_types)}")
@@ -132,36 +161,21 @@ def set_model(args):
             block_out_channels=block_out_channels,
             down_block_types=down_block_types,
             up_block_types=up_block_types,
+            mid_block_type=mid_block_type,
             cross_attention_dim=args.model.cross_attention_dim,
             num_class_embeds=None,
         )
-        model = UNet2DConditionModel(**unet_kwargs)
-        add_q_norm_to_cross_attn(model)
 
-        # model = UNet2DConditionModel(
-        #     in_channels=args.model.c_in,
-        #     out_channels=args.model.c_out,
-        #     sample_size=args.model.input_size,  # 256 power of 2
-        #     block_out_channels=(128, 256, 512, 512),
-        #     down_block_types=(
-        #         "DownBlock2D",
-        #         "DownBlock2D",
-        #         "AttnDownBlock2D",
-        #         "AttnDownBlock2D",
-        #     ),
-        #     up_block_types=(
-        #         "AttnUpBlock2D",
-        #         "AttnUpBlock2D",
-        #         "UpBlock2D",
-        #         "UpBlock2D",
-        #     ),
-        #     cross_attention_dim=args.model.cross_attention_dim,
-        #     num_class_embeds=None,
-        # )   
-        
-        # playing around to figure out how to do conditioning on this model:
-        # result@ don't change this class embedding!
-        # model.class_embedding = torch.nn.Embedding(args.model.num_classes + 1, args.model.cross_attention_dim)
+        if condition_mode == "additive":
+            ann_dim = getattr(args.model, "ann_dim", 768)
+            num_identities = int(getattr(args.model, "num_classes", 8))
+            print(f"Using additive conditioning (ann_dim={ann_dim}, num_identities={num_identities})")
+            model = UNet2DAdditiveConditionModel(**unet_kwargs, ann_dim=ann_dim, num_identities=num_identities)
+        else:
+            print("Using cross-attention conditioning (ANN vector projected to cross-attn tokens by ANNTokenizer)")
+            model = UNet2DConditionModel(**unet_kwargs)
+
+        # add_q_norm_to_cross_attn(model)
 
     elif args.model.name == "gfdm-unet":
         print("Setting GFDM UNet model")
@@ -180,7 +194,7 @@ def set_model(args):
             use_scale_shift_norm=True,
         )
     elif args.model.name == "gfdm-unet-1d-cond":
-        cond_mode = getattr(args.model, "cond_mode", "additive")
+        cond_mode = getattr(args.model, "condition_mode", "additive")
         cond_dim = getattr(args.model, "ann_dim", 768)
 
         if cond_mode == "cross_attention":

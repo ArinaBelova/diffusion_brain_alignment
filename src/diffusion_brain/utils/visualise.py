@@ -166,6 +166,9 @@ def get_r_across_images_2d_data(args, generated_data_roi_2d, true_fmri, step_num
         true_fmri = true_fmri.squeeze(1)[:, y_coords, x_coords]
         print("True signal shape after squeezing:", true_fmri.shape)  # Should be (grid_size, grid_size)
 
+    if type(true_fmri) == torch.Tensor:
+        true_fmri = true_fmri.cpu().numpy()
+        
     # Calculate Pearson correlation for each location with either mean signal or with true signal
     r_arr = np.array([
         scipy.stats.pearsonr(time_series[:, i], true_fmri[:, i])[0]
@@ -210,11 +213,14 @@ def get_r_across_images_2d_data(args, generated_data_roi_2d, true_fmri, step_num
         assert len(true_fmri_by_voxel) == len(generated_sample)
         r_scores_across_voxels[image_idx] = scipy.stats.pearsonr(true_fmri_by_voxel, generated_sample)[0]
 
+    mse = np.mean((time_series - true_fmri) ** 2)
+
     r_payload = _attach_model_step({f"generated_data": generated_data_to_report_wandb,
                                     f"true_fmri_data": true_fmri_to_report_wandb,
                                     "r_image": wandb.Image(fig),
                                     "mean_r_scores_across_voxels": np.mean(r_scores_across_voxels),
-                                    "mean_r_scores_across_batch_images": np.mean(r_scores_across_batch_images)}, step_num)
+                                    "mean_r_scores_across_batch_images": np.mean(r_scores_across_batch_images),
+                                    "mse": mse}, step_num)
     wandb.log(r_payload)
 
     plt.close(fig)    
@@ -271,14 +277,17 @@ def get_r_across_images_1d_data(args, generated_data_roi, true_fmri, step_num=No
     fig_generated_data = pyplot_brain(generated_data_roi.mean(axis=0), args=args, savename=f"generated_data_mean_across_images_step", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png', step_num=step_num)
     fig_true_fmri = pyplot_brain(true_fmri.mean(axis=0), args=args, savename=f"true_fmri_mean_across_images_step", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png', step_num=step_num)
 
+    mse = np.mean((generated_data_roi - true_fmri) ** 2)
+
     r_payload = _attach_model_step({
-        "three_generated_images": images_pred, 
+        "three_generated_images": images_pred,
         "three_true_fmri_images": images_true,
         "r_scores_across_batch_images": wandb.Image(fig_r_scores_across_img),
         "mean_generated_data_across_batch_images": wandb.Image(fig_generated_data),
         "mean_true_fmri_data_across_batch_images": wandb.Image(fig_true_fmri),
         "mean_r_scores_across_batch_images": np.mean(r_scores_across_batch_images),
-        "mean_r_scores_across_voxels": np.mean(r_scores_across_voxels)
+        "mean_r_scores_across_voxels": np.mean(r_scores_across_voxels),
+        "mse": mse
     }, step_num)
 
     wandb.log(r_payload)

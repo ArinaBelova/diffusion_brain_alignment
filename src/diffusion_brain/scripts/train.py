@@ -20,175 +20,6 @@ from diffusion_brain.utils.visualise import visualise_and_save_results, pyplot_b
 
 # from diffusion_brain.debug_cross_attention import run_all_diagnostics
 
-class CrossAttnDiagnostics:
-    """Monkey-patches CrossAttn layers to directly capture conditioning usage (bypassing hook limitations)."""
-    
-    def __init__(self, model):
-        self.model = model
-        self.original_forwards = {}
-        self.attention_data = {}
-        self.num_layers_patched = 0
-        self.register_patches()
-    
-    def register_patches(self):
-        """Monkey-patch attn2 Attention layers to capture encoder_hidden_states directly."""
-        found_layers = []
-        
-        for name, module in self.model.named_modules():
-            # Look for the actual Attention modules inside attn2
-            if "attn2" in name and type(module).__name__ == "Attention":
-                try:
-                    # Save original forward method
-                    self.original_forwards[name] = module.forward
-                    
-                    # Create patched forward method with access to kwargs
-                    patched_forward = self._make_patched_forward(name, module, self.original_forwards[name])
-                    module.forward = patched_forward
-                    
-                    self.num_layers_patched += 1
-                    found_layers.append(name)
-                except Exception as e:
-                    print(f"  - Failed to patch {name}: {e}", flush=True)
-        
-        if found_layers:
-            print(f"Attention modules in attn2 found and patched: {len(found_layers)} total", flush=True)
-            for layer in found_layers[:3]:  # Print first 3
-                print(f"  - {layer}", flush=True)
-            if len(found_layers) > 3:
-                print(f"  ... and {len(found_layers)-3} more", flush=True)
-        else:
-            print("WARNING: No attn2 Attention modules found in model!", flush=True)
-        
-        print(f"Total Attention patches registered: {self.num_layers_patched}", flush=True)
-    
-    def _make_patched_forward(self, name, module, original_forward):
-        """Create a patched forward method that captures kwargs and attention dynamics."""
-        def patched_forward(hidden_states, encoder_hidden_states=None, attention_mask=None, **kwargs):
-            # CAPTURE: encoder_hidden_states statistics
-            if encoder_hidden_states is not None:
-                self.attention_data[f"{name}_hidden_mean"] = float(encoder_hidden_states.mean().detach().item())
-                self.attention_data[f"{name}_hidden_std"] = float(encoder_hidden_states.std().detach().item())
-                self.attention_data[f"{name}_hidden_norm"] = float(torch.norm(encoder_hidden_states).detach().item())
-                self.attention_data[f"{name}_hidden_shape"] = str(encoder_hidden_states.shape)
-                self.attention_data[f"{name}_has_conditioning"] = True
-            else:
-                self.attention_data[f"{name}_has_conditioning"] = False
-            
-            # CAPTURE: hidden_states (query) statistics
-            self.attention_data[f"{name}_hidden_in_norm"] = float(torch.norm(hidden_states).detach().item())
-            
-            # Call original forward and capture output
-            output = original_forward(hidden_states, encoder_hidden_states=encoder_hidden_states, 
-                                     attention_mask=attention_mask, **kwargs)
-            
-            # CAPTURE: output statistics to see if conditioning affected it
-            if isinstance(output, torch.Tensor):
-                self.attention_data[f"{name}_output_norm"] = float(torch.norm(output).detach().item())
-            
-            return output
-        
-        return patched_forward
-    
-    def get_diagnostics(self):
-        """Return collected diagnostics and reset."""
-        diag = dict(self.attention_data)
-        self.attention_data = {}
-        return diag
-    
-    def cleanup(self):
-        """Restore original forward methods."""
-        for name, original_forward in self.original_forwards.items():
-            try:
-                for mod_name, module in self.model.named_modules():
-                    if mod_name == name:
-                        module.forward = original_forward
-                        break
-            except Exception as e:
-                print(f"Failed to restore {name}: {e}", flush=True)
-
-
-class AttentionWeightsDiagnostics:
-    """Hooks into actual attention computation to capture conditioning sensitivity."""
-    
-    def __init__(self, model):
-        self.model = model
-        self.hooks = []
-        self.attention_data = {}
-        self.outputs_real = {}  # Store outputs from real conditioning pass
-        self.outputs_shuffled = {}  # Store outputs from shuffled conditioning pass
-        self.pass_mode = "real"  # Track which pass we're in
-        self.register_hooks()
-    
-    def register_hooks(self):
-        """Register hooks on Attention.__call__ to capture attention outputs."""
-        found_layers = []
-        
-        for name, module in self.model.named_modules():
-            if "attn2" in name and type(module).__name__ == "Attention":
-                try:
-                    # Register forward hook to capture outputs including attention weights
-                    hook = module.register_forward_hook(self._make_output_hook(name))
-                    self.hooks.append(hook)
-                    found_layers.append(name)
-                except Exception as e:
-                    print(f"  - Failed to register attention hook on {name}: {e}", flush=True)
-        
-        if found_layers:
-            print(f"Attention sensitivity hooks registered on {len(found_layers)} layers", flush=True)
-    
-    def _make_output_hook(self, name):
-        """Create a hook to capture attention output for sensitivity analysis."""
-        def hook(module, input, output):
-            try:
-                if isinstance(output, torch.Tensor):
-                    # Store output norm for this pass
-                    output_norm = float(torch.norm(output).detach().item())
-                    
-                    if self.pass_mode == "real":
-                        self.outputs_real[name] = output_norm
-                    elif self.pass_mode == "shuffled":
-                        self.outputs_shuffled[name] = output_norm
-            except Exception as e:
-                pass  # Silently fail to not clutter logs
-        
-        return hook
-    
-    def set_pass_mode(self, mode):
-        """Set whether we're capturing real or shuffled conditioning pass."""
-        self.pass_mode = mode  # "real" or "shuffled"
-    
-    def compute_sensitivity(self):
-        """Compute how different outputs are between real and shuffled conditioning."""
-        sensitivity_data = {}
-        
-        for name in self.outputs_real.keys():
-            if name in self.outputs_shuffled:
-                real_norm = self.outputs_real[name]
-                shuffled_norm = self.outputs_shuffled[name]
-                
-                # Compute difference as indicator of conditioning sensitivity
-                if real_norm + shuffled_norm > 0:
-                    relative_diff = abs(real_norm - shuffled_norm) / (real_norm + shuffled_norm)
-                    sensitivity_data[f"{name}_cond_sensitivity"] = relative_diff
-        
-        # Clear buffers
-        self.outputs_real = {}
-        self.outputs_shuffled = {}
-        
-        return sensitivity_data
-    
-    def get_diagnostics(self):
-        """Return collected diagnostics."""
-        diag = dict(self.attention_data)
-        self.attention_data = {}
-        return diag
-    
-    def cleanup(self):
-        """Remove all hooks."""
-        for hook in self.hooks:
-            hook.remove()
-
-
 def log_wandb(payload, step=None):
     if wandb.run is None:
         return
@@ -408,9 +239,16 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
         #         flush=True
         #     )
         
-        predicted_score = score_fn(x_t, t, encoder_hidden_states = encoder_hidden_states, class_labels=class_labels_arg).sample
+        condition_mode = getattr(args.model, "condition_mode", "cross_attention")
+        if condition_mode == "additive":
+            # Pure additive: no cross-attention blocks in the model,
+            # ANN signal goes through ann_embedding into the time embedding.
+            predicted_score = score_fn(x_t, t, encoder_hidden_states=None, ann_signal=masked_labels.float()).sample
+        else:
+            #print("Using standard diffusers library UNet2DConditionModel with encoder_hidden_states conditioning", flush=True)
+            predicted_score = score_fn(x_t, t, encoder_hidden_states=encoder_hidden_states, class_labels=class_labels_arg).sample
     elif args.model.name == "gfdm-unet-1d-cond":
-        cond_mode = getattr(args.model, "cond_mode", "additive")
+        cond_mode = getattr(args.model, "condition_mode", "additive")
         if cond_mode == "cross_attention" and args.data.data_name == "ann-brain":
             # Cross-attention: tokenize ANN → (B, num_tokens, token_dim) → permute to (B, token_dim, num_tokens) for conv1d encoder_kv
             encoder_out = encoder_hidden_states.permute(0, 2, 1).contiguous()
@@ -431,170 +269,9 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
         predicted_score = predicted_score[..., :h, :w]
         true_score = true_score[..., :h, :w]
 
-    denoise_loss = loss_function(predicted_score, true_score)
+    total_loss = loss_function(predicted_score, true_score)
 
-    # Conditioning separation loss (ann-brain only):
-    # Penalise the model when the conditional and unconditional predictions are
-    # identical. Without this, the backbone learns a "good enough" unconditional
-    # score and gradients through the cross-attention pathway vanish.
-    # lambda_cond_sep controls how strongly conditioning is encouraged; set to
-    # 0.0 in the config to disable.
-    lambda_cond_sep = float(getattr(args.model, "lambda_cond_sep", 0.0))
-    _use_cross_attn_1d = args.model.name == "gfdm-unet-1d-cond" and getattr(args.model, "cond_mode", "additive") == "cross_attention"
-    if lambda_cond_sep > 0.0 and args.data.data_name == "ann-brain" and (args.model.name in ["unet-diffusers", "unet-diffusers-1d"] or _use_cross_attn_1d):
-        cond_tokens_sep = to_cond_tokens(label.float())
-        uncond_tokens_sep = torch.zeros_like(cond_tokens_sep)
-        # Detach x_t so backbone ResNet blocks receive no gradient from sep_loss.
-        # Only K/V projections (cross-attn) and ANNTokenizer get gradient,
-        # preventing the backbone from learning to cancel the signal.
-        x_t_sep = x_t.detach()
-        if _use_cross_attn_1d:
-            cond_enc = cond_tokens_sep.permute(0, 2, 1).contiguous()
-            uncond_enc = uncond_tokens_sep.permute(0, 2, 1).contiguous()
-            pred_cond_sep = score_fn(x_t_sep, t, encoder_out=cond_enc)
-            pred_uncond_sep = score_fn(x_t_sep, t, encoder_out=uncond_enc)
-        else:
-            pred_cond_sep = score_fn(x_t_sep, t, encoder_hidden_states=cond_tokens_sep, class_labels=None).sample
-            pred_uncond_sep = score_fn(x_t_sep, t, encoder_hidden_states=uncond_tokens_sep, class_labels=None).sample
-        if orig_len is not None:
-            pred_cond_sep = pred_cond_sep[..., :orig_len]
-            pred_uncond_sep = pred_uncond_sep[..., :orig_len]
-        elif orig_shape is not None:
-            h, w = orig_shape
-            pred_cond_sep = pred_cond_sep[..., :h, :w]
-            pred_uncond_sep = pred_uncond_sep[..., :h, :w]
-        # Maximise L1 separation between conditional and unconditional predictions.
-        # Negated because we want to maximise, not minimise.
-        sep_loss = -F.l1_loss(pred_cond_sep, pred_uncond_sep, reduction="mean")
-        total_loss = denoise_loss + lambda_cond_sep * sep_loss
-    else:
-        total_loss = denoise_loss
-
-    # Diagnostics: check if conditioning is actually affecting predictions
-    # cond_diagnostics = {}
-    # if step % 100 == 0:
-    #     with torch.no_grad():
-    #         if args.data.data_name == "ann-brain" and args.model.name == "gfdm-unet-1d-cond" and label.shape[0] > 1 and ann_tokenizer is not None:
-    #             # 1D cross-attention conditioning diagnostics
-    #             cond_tokens = to_cond_tokens(label.float())
-    #             uncond_tokens = torch.zeros_like(cond_tokens)
-    #             perm = torch.randperm(label.shape[0], device=label.device)
-    #             shuffled_tokens = to_cond_tokens(label[perm].float())
-
-    #             with torch.autocast(device_type="cuda", enabled=False):
-    #                 x_t_f32 = x_t.float()
-    #                 cond_out = cond_tokens.float().permute(0, 2, 1)
-    #                 uncond_out = uncond_tokens.float().permute(0, 2, 1)
-    #                 shuf_out = shuffled_tokens.float().permute(0, 2, 1)
-
-    #                 cond_pred = score_fn(x_t_f32, t, encoder_out=cond_out)
-    #                 shuffled_pred = score_fn(x_t_f32, t, encoder_out=shuf_out)
-    #                 uncond_pred = score_fn(x_t_f32, t, encoder_out=uncond_out)
-
-    #             if orig_len is not None:
-    #                 cond_pred = cond_pred[..., :orig_len]
-    #                 uncond_pred = uncond_pred[..., :orig_len]
-    #                 shuffled_pred = shuffled_pred[..., :orig_len]
-
-    #             sep_cond_uncond = F.l1_loss(cond_pred, uncond_pred, reduction="mean").item()
-    #             sep_cond_shuffled = F.l1_loss(cond_pred, shuffled_pred, reduction="mean").item()
-    #             sep_uncond_shuffled = F.l1_loss(uncond_pred, shuffled_pred, reduction="mean").item()
-
-    #             cond_diagnostics.update({
-    #                 "sep_cond_uncond": sep_cond_uncond,
-    #                 "sep_cond_shuffled": sep_cond_shuffled,
-    #                 "sep_uncond_shuffled": sep_uncond_shuffled,
-    #                 "cond_pred_norm": float(torch.norm(cond_pred).item()),
-    #                 "uncond_pred_norm": float(torch.norm(uncond_pred).item()),
-    #                 "shuffled_pred_norm": float(torch.norm(shuffled_pred).item()),
-    #             })
-    #         elif args.data.data_name == "ann-brain" and args.model.name in ["unet-diffusers", "unet-diffusers-1d"] and label.shape[0] > 1:
-    #             # Compute predictions with different conditioning inputs (ann-brain uses continuous labels)
-    #             cond_tokens = to_cond_tokens(label.float())
-    #             uncond_tokens = torch.zeros_like(cond_tokens)
-    #             perm = torch.randperm(label.shape[0], device=label.device)
-    #             shuffled_tokens = to_cond_tokens(label[perm].float())
-
-    #             # Run in float32: bfloat16 precision (~0.8%) rounds away the
-    #             # conditioning difference (<0.1%) making sep_cond_uncond appear zero.
-    #             with torch.autocast(device_type="cuda", enabled=False):
-    #                 x_t_f32 = x_t.float()
-    #                 # REAL CONDITIONING PASS
-    #                 if attn_weights_diag is not None:
-    #                     attn_weights_diag.set_pass_mode("real")
-    #                 cond_pred = score_fn(x_t_f32, t, encoder_hidden_states=cond_tokens.float(), class_labels=None).sample
-
-    #                 # SHUFFLED CONDITIONING PASS
-    #                 if attn_weights_diag is not None:
-    #                     attn_weights_diag.set_pass_mode("shuffled")
-    #                 shuffled_pred = score_fn(x_t_f32, t, encoder_hidden_states=shuffled_tokens.float(), class_labels=None).sample
-
-    #                 # UNCOND PASS
-    #                 uncond_pred = score_fn(x_t_f32, t, encoder_hidden_states=uncond_tokens.float(), class_labels=None).sample
-                
-    #             # Compute attention sensitivity (difference between real and shuffled conditioning)
-    #             if attn_weights_diag is not None:
-    #                 sensitivity = attn_weights_diag.compute_sensitivity()
-    #                 cond_diagnostics.update(sensitivity)
-                
-    #             if orig_shape is not None:
-    #                 h, w = orig_shape
-    #                 cond_pred = cond_pred[..., :h, :w]
-    #                 uncond_pred = uncond_pred[..., :h, :w]
-    #                 shuffled_pred = shuffled_pred[..., :h, :w]
-                
-    #             # Compute separations
-    #             sep_cond_uncond = F.l1_loss(cond_pred, uncond_pred, reduction="mean").item()
-    #             sep_cond_shuffled = F.l1_loss(cond_pred, shuffled_pred, reduction="mean").item()
-    #             sep_uncond_shuffled = F.l1_loss(uncond_pred, shuffled_pred, reduction="mean").item()
-                
-    #             cond_diagnostics.update({
-    #                 "sep_cond_uncond": sep_cond_uncond,
-    #                 "sep_cond_shuffled": sep_cond_shuffled,
-    #                 "sep_uncond_shuffled": sep_uncond_shuffled,
-    #                 "cond_pred_norm": float(torch.norm(cond_pred).item()),
-    #                 "uncond_pred_norm": float(torch.norm(uncond_pred).item()),
-    #                 "shuffled_pred_norm": float(torch.norm(shuffled_pred).item()),
-    #             })
-    #         elif args.data.data_name == "mnist" and args.model.name in ["unet-diffusers", "unet-diffusers-1d"] and label.shape[0] > 1:
-    #             # Compute predictions with different discrete label conditioning (MNIST)
-    #             cond_labels = label.long()
-    #             uncond_labels = torch.full_like(cond_labels, args.model.num_classes)  # "empty" label
-    #             perm = torch.randperm(label.shape[0], device=label.device)
-    #             shuffled_labels = cond_labels[perm]
-                
-    #             # All use zeros for encoder_hidden_states (as in training)
-    #             encoder_hidden_states_zeros = torch.zeros(x_t.shape[0], 1, args.model.cross_attention_dim, device=x_t.device)
-                
-    #             cond_pred = score_fn(x_t, t, encoder_hidden_states=encoder_hidden_states_zeros, class_labels=cond_labels).sample
-    #             uncond_pred = score_fn(x_t, t, encoder_hidden_states=encoder_hidden_states_zeros, class_labels=uncond_labels).sample
-    #             shuffled_pred = score_fn(x_t, t, encoder_hidden_states=encoder_hidden_states_zeros, class_labels=shuffled_labels).sample
-                
-    #             if orig_shape is not None:
-    #                 h, w = orig_shape
-    #                 cond_pred = cond_pred[..., :h, :w]
-    #                 uncond_pred = uncond_pred[..., :h, :w]
-    #                 shuffled_pred = shuffled_pred[..., :h, :w]
-                
-    #             # Compute separations
-    #             sep_cond_uncond = F.l1_loss(cond_pred, uncond_pred, reduction="mean").item()
-    #             sep_cond_shuffled = F.l1_loss(cond_pred, shuffled_pred, reduction="mean").item()
-    #             sep_uncond_shuffled = F.l1_loss(uncond_pred, shuffled_pred, reduction="mean").item()
-                
-    #             cond_diagnostics = {
-    #                 "sep_cond_uncond": sep_cond_uncond,
-    #                 "sep_cond_shuffled": sep_cond_shuffled,
-    #                 "sep_uncond_shuffled": sep_uncond_shuffled,
-    #                 "cond_pred_norm": float(torch.norm(cond_pred).item()),
-    #                 "uncond_pred_norm": float(torch.norm(uncond_pred).item()),
-    #                 "shuffled_pred_norm": float(torch.norm(shuffled_pred).item()),
-    #             }
-    cond_diagnostics={}
-
-    return total_loss, {
-        "denoise_loss": float(denoise_loss.detach().item()),
-        **cond_diagnostics,
-    }
+    return total_loss
 
 def save_checkpoint(directory, model, optimizer, lr_scheduler, step, best_val_r_score, ann_tokenizer=None, ema=None, suffix="", fmri_min=None, fmri_max=None):
     """Save a full training checkpoint that can be used to resume training.
@@ -699,7 +376,6 @@ def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_func
     autocast_ctx = torch.autocast(device_type=device_type, dtype=torch.bfloat16) if use_amp else None
     
     accumulated_loss = 0.0
-    accumulated_denoise_loss = 0.0
     accumulated_diagnostics = {}
     
     for accum_step in range(accumulation_steps):
@@ -755,7 +431,7 @@ def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_func
         noise = torch.randn_like(data, device=data.device)
 
         # Forward pass with mixed precision
-        loss, loss_metrics = one_step_score_estimation(
+        loss = one_step_score_estimation(
             data, t, noise, label, model, loss_function, diffusion_process, args,
             step=step, orig_len=orig_len, orig_shape=orig_shape, autocast_ctx=autocast_ctx,
             attn_weights_diag=attn_weights_diag, ann_tokenizer=ann_tokenizer
@@ -768,52 +444,7 @@ def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_func
         loss.backward()
         
         accumulated_loss += loss.item() * accumulation_steps  # Unscale for logging
-        accumulated_denoise_loss += loss_metrics["denoise_loss"]
-        for key, val in loss_metrics.items():
-            if key != "denoise_loss" and key not in accumulated_diagnostics:
-                accumulated_diagnostics[key] = val
 
-    # Collect gradient diagnostics from attn2 (cross-attention) layers BEFORE zero_grad
-    # crossattn_grads = {}
-    # layers_receiving_cond = 0
-    # layers_not_receiving_cond = 0
-    
-    # if step % 100 == 0:
-    #     # Direct parameter inspection for attn2 layers
-    #     for name, param in model.named_parameters():
-    #         if param.grad is not None and "attn2" in name:
-    #             grad_norm = float(torch.norm(param.grad).item())
-    #             if grad_norm > 0:
-    #                 # Shorten name for logging: keep last 3 parts (needed for Q-norm Sequential)
-    #                 parts = name.split(".")
-    #                 short_name = ".".join(parts[-3:]) if len(parts) > 2 else ".".join(parts[-2:]) if len(parts) > 1 else parts[-1]
-    #                 crossattn_grads[f"grad_attn2_{short_name}"] = grad_norm
-        
-    #     # Also collect from forward hook data if available
-    #     if crossattn_diag is not None and crossattn_diag.num_layers_patched > 0:
-    #         try:
-    #             crossattn_diags = crossattn_diag.get_diagnostics()
-    #             accumulated_diagnostics.update(crossattn_diags)
-                
-    #             # Count how many layers are receiving encoder_hidden_states (monkey-patch approach)
-    #             for key, val in crossattn_diags.items():
-    #                 if key.endswith("_has_conditioning"):
-    #                     if val:
-    #                         layers_receiving_cond += 1
-    #                     else:
-    #                         layers_not_receiving_cond += 1
-    #         except Exception as e:
-    #             print(f"Error collecting CrossAttn hook diagnostics: {e}", flush=True)
-        
-    #     # Add gradient info
-    #     if crossattn_grads:
-    #         accumulated_diagnostics.update(crossattn_grads)
-    #         print(
-    #             f"[step {step}] attn2 gradients: {len(crossattn_grads)} params with gradients, "
-    #             f"layers with conditioning: {layers_receiving_cond}, without: {layers_not_receiving_cond}",
-    #             flush=True
-    #         )
-    
     # gradient clipping: 
     #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0, norm_type=2)
 
@@ -832,12 +463,9 @@ def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_func
     if loss_history is not None:
         loss_history.append(accumulated_loss)
 
-    avg_denoise_loss = accumulated_denoise_loss / max(1, accumulation_steps)
-
     payload = {
         "train/loss": accumulated_loss,
         "train/lr": lr_scheduler.get_last_lr()[0],
-        "train/denoise_loss": avg_denoise_loss,
     }
 
     # Log any diagnostics collected
@@ -876,36 +504,41 @@ def train(args):
         # #####################
         ann_dim = one_cond_signal.shape[1]
         args.model.ann_dim = ann_dim
-        cond_token_mode = getattr(args.model, "cond_token_mode", "learned")
-        num_tokens = max(1, int(getattr(args.model, "cond_seq_len", 8)))
-        token_dim = int(getattr(args.model, "token_dim", 256))
 
-        if cond_token_mode == "learned":
-            args.model.cross_attention_dim = token_dim
-            print(
-                f"Condition tokenization: LEARNED | ANN dim {ann_dim} -> "
-                f"ANNTokenizer({num_tokens} tokens x {token_dim}-dim), "
-                f"cross_attention_dim={token_dim}",
-                flush=True,
-            )
+        if args.model.condition_mode == "additive":
+            print(f"Additive conditioning mode: ANN signal of dim {ann_dim} will be added to time embedding, no cross-attention tokens used", flush=True)
+            args.model.cross_attention_dim = ann_dim  # still set cross_attention_dim for potential use in ResNet blocks, but it won't be used for conditioning
         else:
-            # Legacy modes kept for backward compat / ablations
-            cond_seq_len = num_tokens
-            if cond_token_mode == "chunk" and cond_seq_len > 1 and ann_dim % cond_seq_len == 0:
-                args.model.cross_attention_dim = ann_dim // cond_seq_len
+            cond_token_mode = getattr(args.model, "cond_token_mode", "learned")
+            num_tokens = max(1, int(getattr(args.model, "cond_seq_len", 8)))
+            token_dim = int(getattr(args.model, "token_dim", 256))
+
+            if cond_token_mode == "learned":
+                args.model.cross_attention_dim = token_dim
                 print(
-                    f"Condition tokenization: chunk | ANN dim {ann_dim} -> "
-                    f"seq_len {cond_seq_len} x token_dim {args.model.cross_attention_dim}",
+                    f"Condition tokenization: LEARNED | ANN dim {ann_dim} -> "
+                    f"ANNTokenizer({num_tokens} tokens x {token_dim}-dim), "
+                    f"cross_attention_dim={token_dim}",
                     flush=True,
                 )
             else:
-                args.model.cross_attention_dim = ann_dim
-                args.model.cond_token_mode = "repeat"
-                print(
-                    f"Condition tokenization: repeat | seq_len {cond_seq_len}, "
-                    f"token_dim {args.model.cross_attention_dim}",
-                    flush=True,
-                )
+                # Legacy modes kept for backward compat / ablations
+                cond_seq_len = num_tokens
+                if cond_token_mode == "chunk" and cond_seq_len > 1 and ann_dim % cond_seq_len == 0:
+                    args.model.cross_attention_dim = ann_dim // cond_seq_len
+                    print(
+                        f"Condition tokenization: chunk | ANN dim {ann_dim} -> "
+                        f"seq_len {cond_seq_len} x token_dim {args.model.cross_attention_dim}",
+                        flush=True,
+                    )
+                else:
+                    args.model.cross_attention_dim = ann_dim
+                    args.model.cond_token_mode = "repeat"
+                    print(
+                        f"Condition tokenization: repeat | seq_len {cond_seq_len}, "
+                        f"token_dim {args.model.cross_attention_dim}",
+                        flush=True,
+                    )
         
         # For 2D data, we need to compute the padded size for UNet compatibility
         # Store original size for later cropping during generation
@@ -956,13 +589,17 @@ def train(args):
     # Create ANNTokenizer for learned conditioning (replaces manual chunk/repeat)
     ann_tokenizer = None
     cond_token_mode = getattr(args.model, "cond_token_mode", "learned")
-    _1d_cross_attn = args.model.name == "gfdm-unet-1d-cond" and getattr(args.model, "cond_mode", "additive") == "cross_attention"
-    if args.data.data_name == "ann-brain" and (args.model.name == "unet-diffusers" or _1d_cross_attn) and cond_token_mode == "learned":
+    _1d_cross_attn = args.model.name == "gfdm-unet-1d-cond" and getattr(args.model, "condition_mode", "additive") == "cross_attention"
+    _condition_mode = getattr(args.model, "condition_mode", "cross_attention")
+    _needs_tokenizer = (args.model.name == "unet-diffusers" and _condition_mode != "additive") or _1d_cross_attn
+    if args.data.data_name == "ann-brain" and _needs_tokenizer and cond_token_mode == "learned":
         ann_dim = args.model.ann_dim
         num_tokens = max(1, int(getattr(args.model, "cond_seq_len", 8)))
         token_dim = int(getattr(args.model, "token_dim", 256))
         ann_tokenizer = ANNTokenizer(ann_dim=ann_dim, num_tokens=num_tokens, token_dim=token_dim).to(DEVICE)
         print(f"ANNTokenizer created: {ann_dim} -> {num_tokens} tokens x {token_dim}-dim")
+    elif args.model.name == "unet-diffusers" and _condition_mode == "additive":
+        print(f"Additive conditioning mode: ANNTokenizer not needed (ANN signal goes through ann_embedding)")
 
     # Initialize CrossAttn diagnostics
     # crossattn_diag = None
@@ -1072,18 +709,12 @@ def train(args):
             attn_weights_diag=attn_weights_diag, ann_tokenizer=ann_tokenizer, ema=ema
         )
 
-        ##### Claude idea: run diagnostics every N steps and log to wandb #####
-        #if step % 100 == 0:
-         #   metrics = run_all_diagnostics(model, valid_dataloader, args, DEVICE)
-          #  log_wandb({f"diag/{k}": v for k, v in metrics.items()}, step=step)
-        ######
-
         # Log loss histogram periodically (e.g., every 100 steps)
         histogram_freq = getattr(args.train, "histogram_freq", 100)
         if step % histogram_freq == 0 and step > 0:
             log_loss_histogram(loss_history, step)
         
-        if valid_iterator is not None and step % args.validation.eval_freq == 0:
+        if valid_iterator is not None and step != 0 and step % args.validation.eval_freq == 0:
             print(f"Validation at step {step+1}", flush=True)
             # Switch to eval mode for full precision inference (float32)
             model.eval()

@@ -38,6 +38,8 @@ data:
   roi_defs_dir: './src/diffusion_brain/data/roi_defs/'
   roi_file: "streams" #"HCP_MMP1" # can be streams or HCP_MMP1 or nsdgeneral
 
+model:
+  simple_ridge: false
 # # need to wire up the model arguments' with UNet class definition
 # model:
 #   name: gfdm-unet-1d-cond #dit #unet-diffusers #gfdm-unet #unet-diffusers # unet

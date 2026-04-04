@@ -2,7 +2,7 @@ from sklearn.linear_model import RidgeCV
 import torch 
 from scipy.stats import pearsonr
 import numpy as np
-import rsatoolbox
+# import rsatoolbox # need to install it again in the cluster
 import wandb
 import os
 #from fracridge import FracRidgeRegressorCV
@@ -37,13 +37,13 @@ def preprocess_2d_dataset(dataset, args):
     dataset = dataset[:, y_coords, x_coords]  # shape (num_images, n_locations)
     print("Dataset shape after selecting ROI locations: ", dataset.shape, flush=True)
     
-    return dataset
+    return dataset, locations_roi
 
 def train(train_activations_dataset, train_fmri_dataset, args):
     print("Training Ridge Regression with Cross-Validation...", flush=True)
 
     if args.data.is_2d:
-        train_fmri_dataset = preprocess_2d_dataset(train_fmri_dataset, args)
+        train_fmri_dataset, _ = preprocess_2d_dataset(train_fmri_dataset, args)
 
     print("Stats of train activations dataset:", train_activations_dataset.mean(), train_activations_dataset.std(), flush=True)
     print("Stats of train fMRI dataset:", train_fmri_dataset.mean(), train_fmri_dataset.std(), flush=True)
@@ -112,7 +112,7 @@ def validate_and_visualise(clf, true_activations_dataset, true_fmri_dataset, arg
     true_fmri_dataset_copy = true_fmri_dataset.copy()  # Make a copy to avoid modifying the original dataset
     if args.data.is_2d:
         # reshape the 2D fmri data to 1D (flatten the spatial dimensions)
-        true_fmri_dataset = preprocess_2d_dataset(true_fmri_dataset, args)
+        true_fmri_dataset, locations_roi = preprocess_2d_dataset(true_fmri_dataset, args)
         
     # validate and display the results
     print("Generating predicted fMRI data from activations...", flush=True)
@@ -130,6 +130,14 @@ def validate_and_visualise(clf, true_activations_dataset, true_fmri_dataset, arg
 
     ######## 1D Visualisation of predicted and true fMRI data for the test set ##########
     if args.data.is_2d:
+        # transform the predicted 1D fMRI data back to 2D format for visualisation
+        print("Transforming predicted fMRI data back to 2D format for visualifmri_predictedsation...", flush=True)
+        # true_fmri_2d = true_fmri_dataset_copy.squeeze(1)  # (num_images, H, W) — drop channel dim
+        fmri_predicted_2d = np.zeros_like(true_fmri_dataset_copy.squeeze(1))
+        y_coords = locations_roi[0]
+        x_coords = locations_roi[1]
+        fmri_predicted_2d[:, y_coords, x_coords] = fmri_predicted  # fill in the predicted values at the ROI locations
+        fmri_predicted = fmri_predicted_2d
         get_r_across_images_2d_data(args, fmri_predicted, true_fmri_dataset_copy, step_num=step)
     else:
         print("Visualising predicted fMRI data...", flush=True)
@@ -145,13 +153,13 @@ def validate_and_visualise(clf, true_activations_dataset, true_fmri_dataset, arg
         pyplot_brain(difference.mean(axis=0), args=args, savename=f"roi_{args.data.roi}_difference_mse_step_{step}", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png')
 
         get_r_across_images_1d_data(args, fmri_predicted, true_fmri_dataset, step_num=step)
-    ########## RDM visualisation on test dataset ##########
-    print("Visualising RDM on test dataset: ", flush=True)
-    rdms_true_test_fmri = compute_rdm(true_fmri_dataset, args, regime="test")
-    rdms_predicted_test_fmri = compute_rdm(fmri_predicted, args, regime="test")
+    ########## RDM visualisation on test dataset; need to update the container for that ##########
+    # print("Visualising RDM on test dataset: ", flush=True)
+    # rdms_true_test_fmri = compute_rdm(true_fmri_dataset, args, regime="test")
+    # rdms_predicted_test_fmri = compute_rdm(fmri_predicted, args, regime="test")
 
-    wandb.log({"rdm_true_test_fmri": wandb.Image(rsatoolbox.vis.show_rdm(rdms_true_test_fmri)[0], caption="RDM True Test fMRI")})
-    wandb.log({"rdm_predicted_test_fmri": wandb.Image(rsatoolbox.vis.show_rdm(rdms_predicted_test_fmri)[0], caption="RDM Predicted Test fMRI")})
+    # wandb.log({"rdm_true_test_fmri": wandb.Image(rsatoolbox.vis.show_rdm(rdms_true_test_fmri)[0], caption="RDM True Test fMRI")})
+    # wandb.log({"rdm_predicted_test_fmri": wandb.Image(rsatoolbox.vis.show_rdm(rdms_predicted_test_fmri)[0], caption="RDM Predicted Test fMRI")})
 
 def main():
     args = parse_args_and_setup_wandb()

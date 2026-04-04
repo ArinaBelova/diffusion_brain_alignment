@@ -17,7 +17,7 @@ data:
   is_2d: true
   fmri_dataset_variant: "unaveraged"  # use full repetitions (3x per image) instead of averaged betas
   grid_resolution_2d: 1.0
-  resize_to_multiple: 64
+  resize_to_multiple: 64 # must match training config
   images_data_path: './src/diffusion_brain/data/data_coco/'
   behav_data_root: './src/diffusion_brain/data/behav/'
   subj: "subj01"
@@ -36,14 +36,15 @@ model:
   c_in: 1
   c_out: 1
   time_dim: 256
+  condition_mode: "additive" # "additive" adds the ANN vector to the time embedding, "cross_attention" projects the ANN vector to cross-attention tokens by ANNTokenizer; only relevant for unet-diffusers and gfdm-unet-1d-cond
   cond_seq_len: 8
   token_dim: 256
   cond_token_mode: "learned"
-  num_classes: 1
+  num_classes: 8 # for subject identity
   # UNet block configuration — 4 levels with cross-attention at 3 spatial scales
   block_out_channels: [64, 128, 256, 512]
-  down_block_types: ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"]
-  up_block_types: ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"]
+  down_block_types: ["DownBlock2D", "DownBlock2D", "DownBlock2D", "DownBlock2D"] # ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"]
+  up_block_types: ["UpBlock2D", "UpBlock2D", "UpBlock2D", "UpBlock2D"] # ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"]
   ###########################
   input_folder: './model_outputs/ann-brain/ann-brain-cluster' #-197972/'
   run_id: 197972
@@ -65,7 +66,7 @@ optim:
   max_lr: 1.e-4
 
 validation:
-  average_over_num_runs: 2 #10
+  average_over_num_runs: 1 #2 #10
   ode: false
   batch_size: 64 # 128 for gpu5
   n_steps: 100

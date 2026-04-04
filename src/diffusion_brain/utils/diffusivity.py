@@ -195,12 +195,36 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
                     return c.reshape(c.shape[0], cond_seq_len, -1).float()
                 return c.unsqueeze(1).expand(-1, cond_seq_len, -1).float()
 
-            # For ann-brain: ANN conditioning goes exclusively through cross-attention
-            if cond is not None:
+            condition_mode = getattr(args.model, "condition_mode", "cross_attention")
+
+            if condition_mode == "additive" and cond is not None:
+                # Pure additive CFG: no cross-attention blocks, ANN through ann_embedding
+                score_uncond = score_fn(x, time_unet, encoder_hidden_states=None, ann_signal=None).sample
+                score_cond = score_fn(x, time_unet, encoder_hidden_states=None, ann_signal=cond.float()).sample
+
+                if debug_conditioning and idx == 0:
+                    delta = (score_cond - score_uncond).abs().mean().item()
+                    rel_delta = delta / (score_cond.abs().mean().item() + 1e-8)
+                    if cond.shape[0] > 1:
+                        perm = torch.randperm(cond.shape[0], device=cond.device)
+                        score_shuf = score_fn(x, time_unet, encoder_hidden_states=None, ann_signal=cond[perm].float()).sample
+                        delta_shuf = (score_cond - score_shuf).abs().mean().item()
+                        print(
+                            f"[conditioning-check] unet2d-additive step0: Δ(cond-uncond)={delta:.3e}, "
+                            f"rel={rel_delta:.3e}, Δ(cond-shuffled)={delta_shuf:.3e}",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"[conditioning-check] unet2d-additive step0: Δ(cond-uncond)={delta:.3e}, rel={rel_delta:.3e}",
+                            flush=True,
+                        )
+
+            elif cond is not None:
+                # Cross-attention CFG: ANN conditioning through encoder_hidden_states
                 encoder_hidden_states_cond = _to_cond_tokens(cond)
                 encoder_hidden_states_uncond = torch.zeros_like(encoder_hidden_states_cond)
 
-                # class_labels is None — time-embedding slot reserved for subject identity
                 score_uncond = score_fn(x, time_unet, encoder_hidden_states=encoder_hidden_states_uncond, class_labels=None).sample
                 score_cond = score_fn(x, time_unet, encoder_hidden_states=encoder_hidden_states_cond, class_labels=None).sample
 
@@ -237,7 +261,7 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
             if cond is None:
                 cond = torch.zeros(x.shape[0], args.model.cross_attention_dim, device=x.device)
 
-            _cond_mode_1d = getattr(args.model, "cond_mode", "additive")
+            _cond_mode_1d = getattr(args.model, "condition_mode", "additive")
 
             if args.model.name == "gfdm-unet-1d-cond" and _cond_mode_1d == "cross_attention":
                 # Cross-attention conditioning: tokenize ANN → encoder_out
@@ -375,7 +399,7 @@ def generate_samples(num_samples: int,
         dim_x = [args.model.input_size]
     elif args.data.data_name == "mnist": 
         dim_x = (args.model.c_in, args.model.input_size, args.model.input_size)
-    else:
+    elif args.model.name == "unet-diffusers" or args.model.name == "unet-diffusers-1d":
         # For 2D brain data: pad to the same multiple used during training
         # so the UNet sees the same spatial dimensions it was trained on.
         # (mirrors compute_2d_padding / pad_2d_to_multiple from train.py)
@@ -385,7 +409,10 @@ def generate_samples(num_samples: int,
         pad_w = (multiple - (w % multiple)) % multiple
         dim_x = (c, h + pad_h, w + pad_w)
         original_size = (c, h, w)  # override for cropping back
+    else:
+        raise ValueError(f"Model {args.model.name} not recognized for sample generation.")    
 
+    print("In generation generating with model {} and diffusion process {}, noise shape will be {}".format(args.model.name, diffusion_process, (num_samples, *dim_x)), flush=True)
     noise = torch.randn(size=(num_samples, *dim_x), device=device)
     mu, std = diffusion_process.brown_moments(torch.zeros(num_samples, *dim_x).to(device), diffusion_process.T)
 

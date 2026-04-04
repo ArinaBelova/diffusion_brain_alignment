@@ -10,11 +10,12 @@ from diffusion_brain.models.gfdm_models.unet import GFDM_UNetModel
 
 class GFDM_UNet1DConditional(GFDM_UNetModel):
     """
-    1D UNet with additive ANN conditioning:
-      - ANN activations → learned projection → added to time embedding,
-        modulating all residual blocks uniformly via the time-embedding pathway.
-      - Time embedding slot is shared with ANN conditioning (additive).
-        Future subject-identity embedding will need a separate pathway.
+    1D UNet with additive ANN + subject-identity conditioning:
+      - ANN activations → learned projection → added to time embedding
+      - Subject identity → nn.Embedding → added to time embedding
+      - Both modulate all residual blocks uniformly via the time-embedding pathway.
+
+        emb = time_emb + ann_emb + identity_emb
     """
 
     def __init__(
@@ -26,6 +27,7 @@ class GFDM_UNet1DConditional(GFDM_UNetModel):
         attention_resolutions,
         cond_dim=None,
         cond_proj_type="linear",
+        num_identities=None,
         encoder_channels=None,
         dropout=0,
         channel_mult=(1, 2, 4, 8),
@@ -65,26 +67,30 @@ class GFDM_UNet1DConditional(GFDM_UNetModel):
 
         self.downsample_factor = 2 ** (len(channel_mult) - 1)
 
+        # Resolve time_embed_dim for projection layers
+        _time_embed_dim = time_embed_dim if time_embed_dim is not None else model_channels * 4
+
         # Additive ANN conditioning: project ANN vector into time-embedding space
         if cond_dim is not None:
-            if time_embed_dim is not None:
-                time_embed_dim = time_embed_dim
-            else:
-                time_embed_dim = model_channels * 4
-
             if cond_proj_type == "mlp":
                 self.cond_proj = nn.Sequential(
-                    nn.Linear(cond_dim, time_embed_dim),
+                    nn.Linear(cond_dim, _time_embed_dim),
                     nn.SiLU(),
-                    nn.Linear(time_embed_dim, time_embed_dim),
+                    nn.Linear(_time_embed_dim, _time_embed_dim),
                 )
             else:
                 # Single linear projection — no learned nonlinearity
-                self.cond_proj = nn.Linear(cond_dim, time_embed_dim)
+                self.cond_proj = nn.Linear(cond_dim, _time_embed_dim)
         else:
             self.cond_proj = None
 
-    def forward(self, x, timesteps, cond=None, encoder_out=None):
+        # Discrete subject-identity conditioning: embedding lookup table
+        if num_identities is not None:
+            self.identity_embedding = nn.Embedding(num_identities, _time_embed_dim)
+        else:
+            self.identity_embedding = None
+
+    def forward(self, x, timesteps, cond=None, encoder_out=None, identity_label=None):
         """
         :param x: [N, C, L] — 1D brain signal
         :param timesteps: [N]
@@ -92,12 +98,17 @@ class GFDM_UNet1DConditional(GFDM_UNetModel):
             Added to time embedding to modulate all ResNet blocks.
         :param encoder_out: [N, encoder_channels, num_tokens] — tokenised ANN
             activations for cross-attention (if attention_resolutions is non-empty).
+        :param identity_label: [N] — integer subject identity indices, or None.
         """
         emb = self.time_embed(timestep_embedding(timesteps, self.model_channels))
 
         # Additive conditioning: ANN vector projected and added to time embedding
         if cond is not None and self.cond_proj is not None:
             emb = emb + self.cond_proj(cond)
+
+        # Subject-identity conditioning
+        if identity_label is not None and self.identity_embedding is not None:
+            emb = emb + self.identity_embedding(identity_label)
 
         hs = []
         h = x.type(self.dtype)
