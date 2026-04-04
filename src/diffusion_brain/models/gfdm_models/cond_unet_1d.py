@@ -65,7 +65,7 @@ class GFDM_UNet1DConditional(GFDM_UNetModel):
             time_embed_dim=time_embed_dim,
         )
 
-        self.downsample_factor = 2 ** (len(channel_mult) - 1)
+        self.downsample_factor = 2 ** (len(channel_mult) - 1)  # do I really need this? yeah
 
         # Resolve time_embed_dim for projection layers
         _time_embed_dim = time_embed_dim if time_embed_dim is not None else model_channels * 4

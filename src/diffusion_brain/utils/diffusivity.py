@@ -149,8 +149,6 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
     dt = time_grid[1] - time_grid[0]
     x_traj = [x_0]
     # I preliminary removed all the .long() casting to avoid CUDA crash
-    y_target = torch.tensor([label]).repeat(n_traj).to(device) # here was weird repeat(n_traj, 1), did I really need this extra dimension anywhere? #(label + np.zeros((n_traj, 1))).long()
-    y_empty = torch.tensor([num_classes]).repeat(n_traj).to(device) 
         
     for idx, t in enumerate(time_grid):
         x = x_traj[idx]
@@ -248,6 +246,8 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
                             flush=True,
                         )
             else:
+                y_target = torch.tensor([label]).repeat(n_traj).to(device) # here was weird repeat(n_traj, 1), did I really need this extra dimension anywhere? #(label + np.zeros((n_traj, 1))).long()
+                y_empty = torch.tensor([num_classes]).repeat(n_traj).to(device) 
                 # For mnist: use class_labels (discrete), cross-attention gets zeros
                 encoder_hidden_states = torch.zeros(x.shape[0], 1, args.model.cross_attention_dim, device=x.device)
                 score_uncond = score_fn(x, time_unet, encoder_hidden_states=encoder_hidden_states, class_labels=y_empty).sample
@@ -311,6 +311,8 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
                         flush=True,
                     )
         else:
+            y_target = torch.tensor([label]).repeat(n_traj).to(device) # here was weird repeat(n_traj, 1), did I really need this extra dimension anywhere? #(label + np.zeros((n_traj, 1))).long()
+            y_empty = torch.tensor([num_classes]).repeat(n_traj).to(device) 
             print("shape of x and t are: ", x.shape, t.shape, flush=True)
             score_uncond = score_fn(x, t, y_empty)
             score_cond = score_fn(x, t, y_target)
@@ -321,7 +323,7 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
         ############### DEBUG: Check if scores differ by label#################################
         if debug_conditioning:  # Only at first timestep
             diff_norm = (score_cond - score_uncond).norm()
-            print(f"t={time_unet.item():.3f} | label={y_target[0].item()} | "
+            print(f"t={time_unet.item():.3f} | " #label={y_target[0].item()} | "
                 f"score_cond norm={score_cond.norm():.4f} | "
                 f"score_uncond norm={score_uncond.norm():.4f} | "
                 f"difference norm={diff_norm:.4f}")

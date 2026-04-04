@@ -195,12 +195,14 @@ def set_model(args):
         )
     elif args.model.name == "gfdm-unet-1d-cond":
         cond_mode = getattr(args.model, "condition_mode", "additive")
-        cond_dim = getattr(args.model, "ann_dim", 768)
+        num_identities = getattr(args.model, "num_classes", None)
+        if num_identities is not None:
+            num_identities = int(num_identities)
 
         if cond_mode == "cross_attention":
             # Cross-attention conditioning: ANNTokenizer → encoder_out at deepest resolution.
             token_dim = int(getattr(args.model, "token_dim", 256))
-            print(f"Setting GFDM UNet 1D conditional model with cross-attention conditioning (encoder_channels={token_dim})")
+            print(f"Setting GFDM UNet 1D conditional model with cross-attention conditioning (encoder_channels={token_dim}, num_identities={num_identities})")
             model = GFDM_UNet1DConditional(
                 in_channels=args.model.c_in,
                 model_channels=64,
@@ -215,11 +217,13 @@ def set_model(args):
                 use_checkpoint=True,
                 time_embed_dim=args.model.time_embed_dim,
                 use_scale_shift_norm=True,
+                num_identities=num_identities,
             )
         else:
+            cond_dim = getattr(args.model, "ann_dim", 768)
             # Additive ANN conditioning: ANN vector projected and added to time embedding.
             cond_proj_type = getattr(args.model, "cond_proj_type", "linear")
-            print(f"Setting GFDM UNet 1D conditional model with additive conditioning (cond_proj={cond_proj_type})")
+            print(f"Setting GFDM UNet 1D conditional model with additive conditioning (cond_proj={cond_proj_type}, ann_dim={cond_dim}, num_identities={num_identities})")
             model = GFDM_UNet1DConditional(
                 in_channels=args.model.c_in,
                 model_channels=64,
@@ -232,8 +236,9 @@ def set_model(args):
                 dropout=0,
                 num_heads=2,
                 use_checkpoint=True,
-                time_embed_dim=args.model.time_embed_dim, # default is 1024, can be set in yaml
+                time_embed_dim=args.model.time_embed_dim,
                 use_scale_shift_norm=True,
+                num_identities=num_identities,
             )
     elif args.model.name == "toy-mlp":
         print("Setting Toy Diffusion MLP model")

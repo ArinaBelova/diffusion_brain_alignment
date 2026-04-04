@@ -6,6 +6,7 @@ from matplotlib import pyplot as plt
 import numpy as np
 import cortex
 import scipy
+from diffusion_brain.utils.fmri_behav_data_utils import signal_to_2d
 
 def _attach_model_step(payload, step_num):
     if step_num is None:
@@ -233,6 +234,12 @@ def get_r_across_images_1d_data(args, generated_data_roi, true_fmri, step_num=No
     # Build the grid
     figs_pred, figs_true = [], []
 
+    if type(generated_data_roi) == torch.Tensor:
+        generated_data_roi = generated_data_roi.cpu().numpy()
+
+    if type(true_fmri) == torch.Tensor:
+        true_fmri = true_fmri.cpu().numpy()
+
     for i in range(min(3, len(generated_data_roi))):
         print("fmri_predicted shape is ", generated_data_roi[i].shape)
         fig_pred = pyplot_brain(generated_data_roi[i], args=args, savename=f"generated_sample_idx_{i}", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png')
@@ -244,18 +251,23 @@ def get_r_across_images_1d_data(args, generated_data_roi, true_fmri, step_num=No
     images_pred = [wandb.Image(f) for f in figs_pred]
     images_true = [wandb.Image(f) for f in figs_true]
 
+    # 2D flatmap projections of the same samples
+    n_preview = min(3, len(generated_data_roi))
+    images_pred_2d, images_true_2d = [], []
+    for i in range(n_preview):
+        gen_i = generated_data_roi[i]
+        true_i = true_fmri[i]
+        gen_2d, _ = signal_to_2d(args, one_signal_to_transform=gen_i)
+        true_2d, _ = signal_to_2d(args, one_signal_to_transform=true_i)
+        images_pred_2d.append(fmri_to_wandb_image(gen_2d[0], title=f"Generated 2D sample {i}"))
+        images_true_2d.append(fmri_to_wandb_image(true_2d[0], title=f"True fMRI 2D sample {i}"))
+
     # to store r scores across images for each voxel
     r_scores_across_batch_images = np.empty((generated_data_roi.shape[1],))
     r_scores_across_voxels = np.empty((generated_data_roi.shape[0],))
 
     print("True fmri shape:", true_fmri.shape, flush=True)
     print("Generated samples shape:", generated_data_roi.shape, flush=True)
-
-    if type(generated_data_roi) == torch.Tensor:
-        generated_data_roi = generated_data_roi.cpu().numpy()
-
-    if type(true_fmri) == torch.Tensor:
-        true_fmri = true_fmri.cpu().numpy()
 
     # TODO: think how interoduce inter-voxels statistics as here we treat all the voxels independently and calculate correlation across images for each voxel separately, 
     # but maybe we can also look at the correlation across voxels not to fall back to the univariate methods approaches
@@ -273,6 +285,8 @@ def get_r_across_images_1d_data(args, generated_data_roi, true_fmri, step_num=No
         assert len(true_fmri_by_voxel) == len(generated_sample)
         r_scores_across_voxels[image_idx] = scipy.stats.pearsonr(true_fmri_by_voxel, generated_sample)[0]
     
+    r_scores_2d, _ = signal_to_2d(args, one_signal_to_transform=r_scores_across_batch_images)
+    r_scores_2d_wandb = fmri_to_wandb_image(r_scores_2d[0], title="r-scores across images (2D)")
     fig_r_scores_across_img = pyplot_brain(r_scores_across_batch_images, args=args, savename=f"r_scores_across_batch_images_step", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png', step_num=step_num)
     fig_generated_data = pyplot_brain(generated_data_roi.mean(axis=0), args=args, savename=f"generated_data_mean_across_images_step", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png', step_num=step_num)
     fig_true_fmri = pyplot_brain(true_fmri.mean(axis=0), args=args, savename=f"true_fmri_mean_across_images_step", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png', step_num=step_num)
@@ -282,7 +296,10 @@ def get_r_across_images_1d_data(args, generated_data_roi, true_fmri, step_num=No
     r_payload = _attach_model_step({
         "three_generated_images": images_pred,
         "three_true_fmri_images": images_true,
+        "three_generated_images_2d": images_pred_2d,
+        "three_true_fmri_images_2d": images_true_2d,
         "r_scores_across_batch_images": wandb.Image(fig_r_scores_across_img),
+        "r_scores_across_batch_images_2d": r_scores_2d_wandb,
         "mean_generated_data_across_batch_images": wandb.Image(fig_generated_data),
         "mean_true_fmri_data_across_batch_images": wandb.Image(fig_true_fmri),
         "mean_r_scores_across_batch_images": np.mean(r_scores_across_batch_images),
