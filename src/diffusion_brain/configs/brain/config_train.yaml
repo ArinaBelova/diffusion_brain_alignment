@@ -32,18 +32,18 @@ data:
   ann_model_weights: "IMAGENET1K_SWAG_E2E_V1" #"IMAGENET1K_V2" # old interface "ResNet50_Weights.IMAGENET1K_V2"
   ann_activations_data_path: './src/diffusion_brain/data/ann_activations/'
   layer_name: "encoder.layers.encoder_layer_11.mlp" #"avgpool"
-  roi: 5 #18 #10 #5 # do the correct indexing as described in roi_defs/streams.mgz.ctab
+  roi: 5 #5 #18 #10 #5 # do the correct indexing as described in roi_defs/streams.mgz.ctab
   roi_defs_dir: './src/diffusion_brain/data/roi_defs/'
-  roi_file: "streams" #"HCP_MMP1" # can be streams or HCP_MMP1 or nsdgeneral
+  roi_file: "streams" #"streams" #"HCP_MMP1" # can be streams or HCP_MMP1 or nsdgeneral
 
 # need to wire up the model arguments' with UNet class definition
 model:
   name: gfdm-unet-1d-cond #dit #unet-diffusers #gfdm-unet #unet-diffusers # unet
-  num_classes: 1 # reserved for future subject-identity conditioning
+  num_classes: ~ # reserved for future subject-identity conditioning
   c_in: 1
   c_out: 1
   condition_mode: "additive" # "additive" (ANN added to time emb) or "cross_attention" (ANNTokenizer → encoder_out); only for gfdm-unet-1d-cond
-  cond_proj_type: "linear" # "linear" (single projection) or "mlp" (2-layer with SiLU); only for additive cond_mode
+  cond_proj_type: "mlp" # "linear" (single projection) or "mlp" (2-layer with SiLU); only for additive cond_mode
   time_embed_dim: ~ #1024 # ~ dimension of time embedding; only for gfdm-unet-1d-cond
   #cross_attention_dim: 768 # set dynamically from ANN activation dim
   ############ for cross-attention conditioning ############
@@ -104,12 +104,12 @@ train:
 validation:
   ode: false
   eval_freq: 1000
-  batch_size: 64 #128 #32 #256 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
+  batch_size: 64 #128 for ROI 18 #32 #256 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
   n_steps: 100 # SDE steps
-  guidance_scale: 3.0 #0.8
+  guidance_scale: 20.0 #5.0
   output_folder: '/outputs/ann-brain/'
   num_workers: 1
   label_to_generate: 1 # it needs to be removed later when refactoring diffusivity.py as in ann-brain case we have continuous conditioning vector and not class labels;
   debug_conditioning: true
-  thresholding: static # none / static / dynamic; static clips to fMRI data [min, max], dynamic uses per-sample percentile
+  thresholding: none # none / static / dynamic; static clips to fMRI data [min, max], dynamic uses per-sample percentile
   dynamic_thresholding_percentile: 0.995 # only used when thresholding=dynamic

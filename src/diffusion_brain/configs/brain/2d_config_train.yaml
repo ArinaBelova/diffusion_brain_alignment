@@ -37,6 +37,7 @@ data:
   roi: 5 #18 #10 #5 # do the correct indexing as described in roi_defs/streams.mgz.ctab
   roi_defs_dir: './src/diffusion_brain/data/roi_defs/'
   roi_file: "streams" #"streams" #"HCP_MMP1" # can be streams or HCP_MMP1 or nsdgeneral
+  fmri_norm_mode: "global_std" # "active_std" divides by non-zero voxel std (full image std≈0.3); "global_std" divides by full image std (std≈1, matches VP-SDE schedule)
 
 # need to wire up the model arguments' with UNet class definition
 model:
@@ -63,7 +64,7 @@ model:
   depth: 12
   hidden_size: 768
   ###########################
-  save_freq: 5000
+  save_freq: 50000
   output_folder: './model_outputs/ann-brain/'
   ######################### autoencoder settings for future use ######################################
   use_autoencoder: false
@@ -89,14 +90,14 @@ optim:
 
 train:
   resume_from: ~ #"./model_outputs/ann-brain/ann-brain-cluster-234770/checkpoint_step_15000.pth" # path to checkpoint file to resume training (e.g., ./model_outputs/ann-brain/ann-brain-cluster-229416/checkpoint_step_5000.pth)
-  steps: 100000 #10000 #2000 # train steps
+  steps: 1000000 #10000 #2000 # train steps
   batch_size: 16 # 32 on gpu5 # reduced for memory with CrossAttn blocks
   dataset_size: 9485 # 10000 - 515 images as train
   num_workers: 4
   histogram_freq: 1000 # frequency of logging loss histogram to wandb, set to 0 to disable
-  use_mixed_precision: false #true  # Enable bfloat16 training
+  use_mixed_precision: true  # Enable bfloat16 training
   gradient_accumulation_steps: 2 #4 #8  # effective batch size = batch_size * gradient_accumulation_steps
-  gradient_checkpointing: false #true  #ue saves ~30-40% memory
+  gradient_checkpointing: true #true  #ue saves ~30-40% memory
   ema_decay: 0.9999  # EMA decay rate for shadow weights (0.0 to disable); used for validation/generation
   ema_warmup_steps: 8000  # ramp EMA decay from 0 to ema_decay over this many optimizer steps
 

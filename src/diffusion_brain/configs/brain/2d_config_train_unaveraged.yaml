@@ -29,6 +29,7 @@ data:
   roi: 5
   roi_defs_dir: './src/diffusion_brain/data/roi_defs/'
   roi_file: "streams"
+  fmri_norm_mode: "global_std"
 
 model:
   name: unet-diffusers
@@ -51,7 +52,7 @@ model:
   depth: 12
   hidden_size: 768
   ###########################
-  save_freq: 5000
+  save_freq: 50000
   output_folder: './model_outputs/ann-brain/'
   ############# autoencoder settings for future use #############
   use_autoencoder: false
@@ -71,7 +72,7 @@ optim:
 
 train:
   resume_from: ~ #"./model_outputs/ann-brain/ann-brain-cluster-234018/checkpoint_step_40000.pth"
-  steps: 100000
+  steps: 1000000
   batch_size: 16 # 8 for gpu3,4 32 for gpu5
   dataset_size: 28455  # ~3x train samples (30000 total - 3*515 test = 28455)
   num_workers: 4

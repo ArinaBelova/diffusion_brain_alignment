@@ -30,6 +30,7 @@ data:
   roi: 5
   roi_defs_dir: './src/diffusion_brain/data/roi_defs/'
   roi_file: "streams"
+  fmri_norm_mode: "active_std" #"global_std"
 
 model:
   name: unet-diffusers

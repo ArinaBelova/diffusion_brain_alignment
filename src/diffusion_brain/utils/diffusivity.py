@@ -349,25 +349,33 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
         # actual magnitude.  Static thresholding uses the fixed training-data
         # range and is applied only in the second half of the trajectory
         # (t < T/2) where x_t should be approaching the data manifold.
-        thresholding = getattr(args.validation, "thresholding", "none") if args is not None else "none"
-        if thresholding == "dynamic":
-            p = float(getattr(args.validation, "dynamic_thresholding_percentile", 0.995))
-            flat = next_step.reshape(next_step.shape[0], -1).abs()
-            s = torch.quantile(flat, p, dim=1)
-            s = s.clamp(min=1.0)
-            for _ in range(len(next_step.shape) - 1):
-                s = s.unsqueeze(-1)
-            next_step = next_step.clamp(-s, s)
-        elif thresholding == "static":
-            # Only clamp in the second half (t < T/2) to avoid interfering
-            # with legitimately noisy early steps
-            if t.item() < T / 2:
-                fmri_min = getattr(args.data, "fmri_min", None)
-                fmri_max = getattr(args.data, "fmri_max", None)
-                if fmri_min is not None and fmri_max is not None:
-                    next_step = next_step.clamp(fmri_min, fmri_max)
+        # thresholding = getattr(args.validation, "thresholding", "none") if args is not None else "none"
+        # if thresholding == "dynamic":
+        #     p = float(getattr(args.validation, "dynamic_thresholding_percentile", 0.995))
+        #     flat = next_step.reshape(next_step.shape[0], -1).abs()
+        #     s = torch.quantile(flat, p, dim=1)
+        #     s = s.clamp(min=1.0)
+        #     for _ in range(len(next_step.shape) - 1):
+        #         s = s.unsqueeze(-1)
+        #     next_step = next_step.clamp(-s, s)
+        # elif thresholding == "static":
+        #     # Only clamp in the second half (t < T/2) to avoid interfering
+        #     # with legitimately noisy early steps
+        #     if t.item() < T / 2:
+        #         fmri_min = getattr(args.data, "fmri_min", None)
+        #         fmri_max = getattr(args.data, "fmri_max", None)
+        #         if fmri_min is not None and fmri_max is not None:
+        #             next_step = next_step.clamp(fmri_min, fmri_max)
 
         x_traj.append(next_step)
+
+    thresholding = getattr(args.validation, "thresholding", "none") if args is not None else "none"
+    if thresholding == "static":
+        # Final clamp to data range for static thresholding (Saharia et al., 2022)
+        fmri_min = getattr(args.data, "fmri_min", None)
+        fmri_max = getattr(args.data, "fmri_max", None)
+        if fmri_min is not None and fmri_max is not None:
+            x_traj[-1] = x_traj[-1].clamp(fmri_min, fmri_max)
 
     return x_traj[-1]
 

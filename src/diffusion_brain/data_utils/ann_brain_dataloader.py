@@ -88,12 +88,15 @@ def get_ann_brain_dataloader(args):
         test_act_index = _build_act_index_map(all_nsd_ids[test_indices], test_nsd_ids)
 
     # 5. Create dataset (train first, then pass its stats to test to avoid data leakage)
+    fmri_norm_mode = getattr(args.data, "fmri_norm_mode", "active_std")
+
     train_dataset = PairedBrainAnnDataset(
         activations_path=train_activations_path,
         fmri_roi_path=fmri_roi_path,
         sample_indices=train_indices,
         is_2d=args.data.is_2d,
         act_index_map=train_act_index,
+        fmri_norm_mode=fmri_norm_mode,
     )
 
     test_dataset = PairedBrainAnnDataset(
@@ -105,6 +108,7 @@ def get_ann_brain_dataloader(args):
         act_std=train_dataset.act_std,
         fmri_scale=getattr(train_dataset, 'fmri_scale', None),
         act_index_map=test_act_index,
+        fmri_norm_mode=fmri_norm_mode,
     )
 
     # 6. DataLoader

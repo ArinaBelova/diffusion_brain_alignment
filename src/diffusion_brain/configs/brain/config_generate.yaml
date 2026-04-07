@@ -38,18 +38,19 @@ model:
   name: gfdm-unet-1d-cond #unet-diffusers #gfdm-unet #unet-diffusers # unet
   c_in: 1
   c_out: 1
-  time_dim: 256
-  num_classes: 1
+  num_classes: ~
+  condition_mode: "additive" # "additive" (ANN added to time emb) or "cross_attention" (ANNTokenizer → encoder_out); only for gfdm-unet-1d-cond
+  cond_proj_type: "linear" # "linear" (single projection) or "mlp" (2-layer with SiLU); only for additive cond_mode
+  time_embed_dim: ~ #1024 # ~ dimension of time embedding; only for gfdm-unet-1d-cond
+  ############ for cross-attention conditioning ############
   cond_seq_len: 8 # num_tokens for ANNTokenizer
   token_dim: 256 # dimension of each token produced by ANNTokenizer
   cond_token_mode: "learned" # "learned" uses ANNTokenizer
-  cond_mode: "cross_attention" # "additive" (ANN added to time emb) or "cross_attention" (ANNTokenizer → encoder_out); only for gfdm-unet-1d-cond
-  cond_proj_type: "linear" # "linear" (single projection) or "mlp" (2-layer with SiLU); only for additive cond_mode
   #cross_attention_dim: 256 # set dynamically from token_dim
-  remove_deep_conv: false
   input_folder: './model_outputs/ann-brain/ann-brain-cluster' #-197972/'
   run_id: 197972
   which: "best"  # all or best
+  ############# autoencoder settings for future use #############
   use_autoencoder: false
   ae_save_path: './model_outputs/ann-brain/autoencoder/'
   ae_name: 'ae_linear'
@@ -60,12 +61,12 @@ model:
 validation:
   average_over_num_runs: 1 #10
   ode: false
-  batch_size: 32 #32 for cross-attention and 64 for additive #515 #128 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
+  batch_size: 128 #32 for cross-attention and 64 for additive #515 #128 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
   n_steps: 100 #100
-  guidance_scale: 20.0 #0.8
+  guidance_scale: 5.0 #0.8
   label_to_generate: 0 # STUB
   output_folder: './outputs/generated_samples/ann-brain/'  
   num_workers: 1
   debug_conditioning: true
-  thresholding: static # none / static / dynamic; static clips to fMRI data [min, max], dynamic uses per-sample percentile
+  thresholding: none # none / static / dynamic; static clips to fMRI data [min, max], dynamic uses per-sample percentile
   dynamic_thresholding_percentile: 0.995 # only used when thresholding=dynamic

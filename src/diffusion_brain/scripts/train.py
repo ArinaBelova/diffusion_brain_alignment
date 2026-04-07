@@ -446,7 +446,7 @@ def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_func
         accumulated_loss += loss.item() * accumulation_steps  # Unscale for logging
 
     # gradient clipping: 
-    #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0, norm_type=2)
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0, norm_type=2)
 
     optimizer.step()
     optimizer.zero_grad()
