@@ -171,7 +171,7 @@ def train_linear_autoencoder(args, train_dataloader, device):
     return autoencoder
 
 
-def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffusion_process, args, step=0, orig_len=None, orig_shape=None, autocast_ctx=None, attn_weights_diag=None, ann_tokenizer=None):
+def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffusion_process, args, step=0, orig_len=None, orig_shape=None, autocast_ctx=None, attn_weights_diag=None, ann_tokenizer=None, identity_label=None):
     # TODO: check this! here I simply need to estimate p_{0t}(x(t)|x(0)) mean and variance and use them to compute the true score    
     true_score = -noise
     mu, std = diffusion_process.brown_moments(x, t)
@@ -199,6 +199,15 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
         # class_labels is NOT used for ANN conditioning — that slot is reserved
         # for future discrete subject-identity embedding
         class_labels_arg = None
+
+        # Independent CFG dropout for subject identity (null token = num_identities)
+        if identity_label is not None:
+            num_identities = getattr(args.model, "num_classes", 8)
+            id_mask = torch.bernoulli(torch.full((len(identity_label),), float(args.model.dropout_prob))).to(identity_label.device)
+            masked_identity = identity_label.clone()
+            masked_identity[id_mask.bool()] = num_identities  # null token
+        else:
+            masked_identity = None
 
         # Log encoder_hidden_states diagnostics every 100 steps
         # if step % 100 == 0:
@@ -243,7 +252,7 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
         if condition_mode == "additive":
             # Pure additive: no cross-attention blocks in the model,
             # ANN signal goes through ann_embedding into the time embedding.
-            predicted_score = score_fn(x_t, t, encoder_hidden_states=None, ann_signal=masked_labels.float()).sample
+            predicted_score = score_fn(x_t, t, encoder_hidden_states=None, ann_signal=masked_labels.float(), identity_label=masked_identity).sample
         else:
             #print("Using standard diffusers library UNet2DConditionModel with encoder_hidden_states conditioning", flush=True)
             predicted_score = score_fn(x_t, t, encoder_hidden_states=encoder_hidden_states, class_labels=class_labels_arg).sample
@@ -379,7 +388,10 @@ def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_func
     accumulated_diagnostics = {}
     
     for accum_step in range(accumulation_steps):
-        data, label = next(train_dataloader)
+        batch = next(train_dataloader)
+        # Dataset returns 2-tuple (fmri, ann) or 3-tuple (fmri, ann, subject_id)
+        data, label = batch[0], batch[1]
+        identity_label = batch[2].to(DEVICE) if len(batch) > 2 else None
         data = data.float().to(DEVICE)
         label = label.to(DEVICE)
         
@@ -434,7 +446,8 @@ def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_func
         loss = one_step_score_estimation(
             data, t, noise, label, model, loss_function, diffusion_process, args,
             step=step, orig_len=orig_len, orig_shape=orig_shape, autocast_ctx=autocast_ctx,
-            attn_weights_diag=attn_weights_diag, ann_tokenizer=ann_tokenizer
+            attn_weights_diag=attn_weights_diag, ann_tokenizer=ann_tokenizer,
+            identity_label=identity_label,
         )
         
         # Scale loss for gradient accumulation
@@ -497,11 +510,9 @@ def train(args):
     # and we need to set them here before we create the model;
     #  TODO: make it more elegant later
     if args.data.data_name == "ann-brain":
-        one_fmri_signal, one_cond_signal = next(iter(train_dataloader))
-        # #####################
-        # grid_to_display = torchvision.utils.make_grid(one_fmri_signal * 255, nrow=int(np.sqrt(args.train.batch_size)))
-        # wandb.log({"one_fmri_signal": wandb.Image(grid_to_display)})
-        # #####################
+        first_batch = next(iter(train_dataloader))
+        # Dataset returns 2-tuple (fmri, ann) or 3-tuple (fmri, ann, subject_id)
+        one_fmri_signal, one_cond_signal = first_batch[0], first_batch[1]
         ann_dim = one_cond_signal.shape[1]
         args.model.ann_dim = ann_dim
 
@@ -731,7 +742,9 @@ def train(args):
                 # TODO: move this correlation calculation to a separate function!
                 current_val_r_score = None
                 if args.data.data_name == "ann-brain":
-                    true_fmri, cond = next(valid_iterator)
+                    valid_batch = next(valid_iterator)
+                    true_fmri, cond = valid_batch[0], valid_batch[1]
+                    val_identity = valid_batch[2].to(DEVICE) if len(valid_batch) > 2 else None
                     cond = cond.float().to(DEVICE)
                     print("Generating sample of batch_size:", args.validation.batch_size, flush=True)
                     generated_samples = diffusivity.generate_samples(
@@ -742,6 +755,7 @@ def train(args):
                         device=DEVICE,
                         cond=cond,
                         ann_tokenizer=ann_tokenizer,
+                        identity_label=val_identity,
                     )
 
                     if autoencoder is not None:
@@ -751,6 +765,25 @@ def train(args):
                         generated_samples = generated_samples.squeeze(1)  # remove channel dim
 
                     current_val_r_score = visualise_and_save_results(generated_samples, step, args, true_fmri=true_fmri)
+
+                    # Compute validation denoising MSE (single forward pass, cheap)
+                    val_data = true_fmri.float().to(DEVICE)
+                    if val_data.ndim == 3:
+                        val_data = val_data.unsqueeze(1)  # add channel dim if missing
+                    val_orig_shape = val_data.shape[-2:] if args.data.is_2d else None
+                    if args.data.is_2d:
+                        val_data, _ = pad_2d_to_multiple(val_data, multiple=args.data.resize_to_multiple)
+                    b_val = val_data.shape[0]
+                    val_t = (torch.rand(b_val, device=DEVICE) * (args.diffusion.T - args.diffusion.eps) + args.diffusion.eps)
+                    val_noise = torch.randn_like(val_data)
+                    val_mse = one_step_score_estimation(
+                        val_data, val_t, val_noise, cond, model, loss_function, diffusion_process, args,
+                        step=step, orig_shape=val_orig_shape, ann_tokenizer=ann_tokenizer,
+                        identity_label=val_identity,
+                    )
+                    log_wandb({"validation/mse": val_mse.item()}, step=step)
+                    print(f"Validation MSE: {val_mse.item():.6f}", flush=True)
+
                 else: # toy, mnist and other data with discrete labels
                     generated_samples = diffusivity.generate_samples(args.validation.batch_size, model, diffusion_process, args, device=DEVICE)
                     # TODO: add other image statistics later

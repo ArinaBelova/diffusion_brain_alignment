@@ -54,7 +54,11 @@ class UNet2DAdditiveConditionModel(UNet2DConditionModel):
         self.ann_embedding = nn.Linear(ann_dim, time_embed_dim)
 
         # Discrete subject-identity conditioning: embedding lookup table.
-        self.identity_embedding = nn.Embedding(num_identities, time_embed_dim)
+        # num_identities + 1 entries: indices 0..num_identities-1 are real subjects,
+        # index num_identities is the null (unconditional) token for CFG dropout.
+        self.identity_embedding = nn.Embedding(num_identities + 1, time_embed_dim)
+        # Initialise the null token to zero so dropping identity has no effect before training
+        nn.init.zeros_(self.identity_embedding.weight[num_identities])
 
     def forward(
         self,

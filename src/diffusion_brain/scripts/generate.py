@@ -254,16 +254,20 @@ def generate_sample_loop(args):
 
         generated_samples_list = []
         true_fmri_list = []
+        subject_ids_list = []
 
-        for idx, (true_fmri, cond) in enumerate(gen_dataloader):
+        for idx, batch in enumerate(gen_dataloader):
+            # Dataset returns 2-tuple (fmri, ann) or 3-tuple (fmri, ann, subject_id)
+            true_fmri, cond = batch[0], batch[1]
+            identity_label = batch[2].to(DEVICE) if len(batch) > 2 else None
             cond = cond.to(DEVICE)
-            
-            print(f"Generating samples with guidance strength {args.validation.guidance_scale} for batch {idx+1} out of {len(gen_dataloader)}...", flush=True)   
+
+            print(f"Generating samples with guidance strength {args.validation.guidance_scale} for batch {idx+1} out of {len(gen_dataloader)}...", flush=True)
             print(f"In this generation procedure we will average across {args.validation.average_over_num_runs} runs")
-            
+
             generated_samples_one_model_one_cond = []
             for _ in range(args.validation.average_over_num_runs):
-                generated_samples_one_model_one_cond_one_time = generate_samples(args.validation.batch_size, model, diffusion_process, args, cond=cond, device=DEVICE, ann_tokenizer=ann_tokenizer)
+                generated_samples_one_model_one_cond_one_time = generate_samples(args.validation.batch_size, model, diffusion_process, args, cond=cond, device=DEVICE, ann_tokenizer=ann_tokenizer, identity_label=identity_label)
                 generated_samples_one_model_one_cond.append(generated_samples_one_model_one_cond_one_time)
             generated_samples_one_model_one_cond = torch.stack(generated_samples_one_model_one_cond, dim=0).mean(dim=0) # averaging across repetitions of the same generation, conditioned on the same ANN signal
 
@@ -294,11 +298,14 @@ def generate_sample_loop(args):
             #     wandb.log(preview_images)
 
             generated_samples_list.append(generated_samples_one_model_one_cond.cpu())
-            true_fmri_list.append(true_fmri.cpu())   
+            true_fmri_list.append(true_fmri.cpu())
+            if identity_label is not None:
+                subject_ids_list.append(identity_label.cpu())
 
         # Concatenate all batches
         generated_samples_one_model = torch.cat(generated_samples_list, dim=0)
         true_fmri_concat = torch.cat(true_fmri_list, dim=0)
+        subject_ids_concat = torch.cat(subject_ids_list, dim=0) if subject_ids_list else None
 
         print("Shape of generated samples after concatenating batches: ", generated_samples_one_model.shape, flush=True)
         print("Shape of true fMRI after concatenating batches: ", true_fmri_concat.shape, flush=True)
@@ -307,7 +314,7 @@ def generate_sample_loop(args):
         match = re.search(r"(step_\d+|final|best)", filename)
         tag = match.group(1) if match else filename
         generated_samples[f"{tag}"] = generated_samples_one_model
-        true_fmri_per_model[f"{tag}"] = true_fmri_concat
+        true_fmri_per_model[f"{tag}"] = (true_fmri_concat, subject_ids_concat)
 
     return generated_samples, true_fmri_per_model
 
@@ -332,14 +339,34 @@ def main():
         for model_name, generated_samples_per_model in generated_samples.items():
             print("Visualising results for model at step: ", model_name)
             step_num = _infer_wandb_step(model_name, args, model_dir=args.model.input_folder)
-            true_fmri = true_fmri_per_model[model_name]
+            true_fmri, subject_ids = true_fmri_per_model[model_name]
             visualise_and_save_results(
-                generated_samples_per_model, 
+                generated_samples_per_model,
                 true_fmri=true_fmri,
-                step=model_name, 
+                step=model_name,
                 args=args,
                 step_num=step_num,
             )
+
+            # Per-subject evaluation for multi-subject models
+            if subject_ids is not None:
+                from diffusion_brain.utils.visualise import get_r_across_images_2d_data, get_r_across_images_1d_data
+                unique_subjects = subject_ids.unique().tolist()
+                print(f"Computing per-subject r-scores for {len(unique_subjects)} subjects...", flush=True)
+                for subj_idx in unique_subjects:
+                    mask = subject_ids == subj_idx
+                    gen_subj = generated_samples_per_model[mask]
+                    true_subj = true_fmri[mask]
+                    if args.data.is_2d:
+                        r_images, r_voxels = get_r_across_images_2d_data(gen_subj, true_subj)
+                    else:
+                        r_images, r_voxels = get_r_across_images_1d_data(gen_subj, true_subj)
+                    print(f"  subj{subj_idx:02d}: r_images={r_images:.4f}, r_voxels={r_voxels:.4f}", flush=True)
+                    wandb.log({
+                        f"per_subject/subj{subj_idx:02d}_r_images": r_images,
+                        f"per_subject/subj{subj_idx:02d}_r_voxels": r_voxels,
+                        "model_step": step_num,
+                    })
             
             if not args.data.is_2d:
                 # I want to see non-interpolated on pycortex flatmap images!

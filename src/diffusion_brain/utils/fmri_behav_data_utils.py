@@ -171,6 +171,73 @@ def _get_train_test_indices_unaveraged(args):
     return train_nsd_ids, test_nsd_ids, train_pos_indices, test_pos_indices
 
 
+ALL_SUBJECTS = [f"subj{i:02d}" for i in range(1, 9)]
+
+
+def get_multi_subject_train_test_indices(args):
+    """Compute train/test indices for all 8 NSD subjects simultaneously.
+
+    For the averaged variant:
+      - Each subject's conditions are loaded from {subj}_all_conditions.npy.
+      - Test set = common 515 images (same for every subject).
+      - Train set = everything else per subject.
+
+    Returns a dict with keys:
+        per_subject: list of 8 dicts, each with:
+            subj, train_nsd_ids, test_nsd_ids, train_indices, test_indices
+        union_train_nsd_ids: sorted unique NSD IDs across all subjects' train sets
+        union_test_nsd_ids: sorted unique NSD IDs across all subjects' test sets
+                           (= common_515 for averaged variant)
+    """
+    variant = getattr(args.data, "fmri_dataset_variant", "averaged")
+    subjects = getattr(args.data, "subjects", ALL_SUBJECTS)
+    test_nsd_set = set(np.load(
+        os.path.join(args.data.behav_data_root, "common_515_indices.npy"),
+        allow_pickle=True,
+    ).tolist())
+
+    per_subject = []
+    all_train_nsd = set()
+    all_test_nsd = set()
+
+    for subj in subjects:
+        if variant == "unaveraged":
+            nsd_ids_path = os.path.join(args.data.fmri_data_root, subj, "nsd_ids.npy")
+            all_nsd_ids = np.load(nsd_ids_path)
+            is_test = np.array([nsd_id in test_nsd_set for nsd_id in all_nsd_ids])
+            test_indices = np.where(is_test)[0]
+            train_indices = np.where(~is_test)[0]
+            train_nsd_ids = np.unique(all_nsd_ids[train_indices])
+            test_nsd_ids = np.unique(all_nsd_ids[test_indices])
+        else:
+            overall_cond = np.load(
+                os.path.join(args.data.behav_data_root, f"{subj}_all_conditions.npy"),
+                allow_pickle=True,
+            )
+            test_cond = np.array([c for c in overall_cond if c in test_nsd_set])
+            train_cond = np.array([c for c in overall_cond if c not in test_nsd_set])
+            train_indices = np.where(np.isin(overall_cond, train_cond))[0]
+            test_indices = np.where(np.isin(overall_cond, test_cond))[0]
+            train_nsd_ids = train_cond
+            test_nsd_ids = test_cond
+
+        per_subject.append({
+            "subj": subj,
+            "train_nsd_ids": train_nsd_ids,
+            "test_nsd_ids": test_nsd_ids,
+            "train_indices": train_indices,
+            "test_indices": test_indices,
+        })
+        all_train_nsd.update(train_nsd_ids.tolist())
+        all_test_nsd.update(test_nsd_ids.tolist())
+
+    return {
+        "per_subject": per_subject,
+        "union_train_nsd_ids": np.sort(np.array(list(all_train_nsd))),
+        "union_test_nsd_ids": np.sort(np.array(list(all_test_nsd))),
+    }
+
+
 def get_train_test_subsets(fmri_dataset, activations_dataset, args):
     train_cond_ann, test_cond_ann, train_pos_indices, test_pos_indices = get_train_test_indices(args)
 

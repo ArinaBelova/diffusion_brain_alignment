@@ -135,6 +135,7 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
             device="cpu",
             args=None,
             ann_tokenizer=None,
+            identity_label: torch.Tensor = None,
             **kwargs
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Function to run reverse-time stochastic differential equation. We assume a deterministic initial Gaussian distribution p_T."""
@@ -197,15 +198,17 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
 
             if condition_mode == "additive" and cond is not None:
                 # Pure additive CFG: no cross-attention blocks, ANN through ann_embedding
-                score_uncond = score_fn(x, time_unet, encoder_hidden_states=None, ann_signal=None).sample
-                score_cond = score_fn(x, time_unet, encoder_hidden_states=None, ann_signal=cond.float()).sample
-
+                # Unconditional: both ANN and identity are None (dropped)
+                score_uncond = score_fn(x, time_unet, encoder_hidden_states=None, ann_signal=None, identity_label=None).sample
+                # Conditional: pass real ANN signal and identity label
+                score_cond = score_fn(x, time_unet, encoder_hidden_states=None, ann_signal=cond.float(), identity_label=identity_label).sample
+            
                 if debug_conditioning and idx == 0:
                     delta = (score_cond - score_uncond).abs().mean().item()
                     rel_delta = delta / (score_cond.abs().mean().item() + 1e-8)
                     if cond.shape[0] > 1:
                         perm = torch.randperm(cond.shape[0], device=cond.device)
-                        score_shuf = score_fn(x, time_unet, encoder_hidden_states=None, ann_signal=cond[perm].float()).sample
+                        score_shuf = score_fn(x, time_unet, encoder_hidden_states=None, ann_signal=cond[perm].float(), identity_label=identity_label).sample
                         delta_shuf = (score_cond - score_shuf).abs().mean().item()
                         print(
                             f"[conditioning-check] unet2d-additive step0: Δ(cond-uncond)={delta:.3e}, "
@@ -218,7 +221,7 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
                             flush=True,
                         )
 
-            elif cond is not None:
+            elif condition_mode == "cross_attention" and cond is not None:
                 # Cross-attention CFG: ANN conditioning through encoder_hidden_states
                 encoder_hidden_states_cond = _to_cond_tokens(cond)
                 encoder_hidden_states_uncond = torch.zeros_like(encoder_hidden_states_cond)
@@ -386,7 +389,8 @@ def generate_samples(num_samples: int,
                      args,
                      device,
                      cond: torch.Tensor = None,
-                     ann_tokenizer=None):
+                     ann_tokenizer=None,
+                     identity_label: torch.Tensor = None):
     """Function to generate samples from the learned diffusion model"""
     # initial samples from p_T
     raw_model = _unwrap_model(model)
@@ -446,6 +450,7 @@ def generate_samples(num_samples: int,
         device=device,
         args=args,
         ann_tokenizer=ann_tokenizer,
+        identity_label=identity_label,
     )
 
     if args.model.name == "gfdm-unet-1d-cond":

@@ -207,13 +207,25 @@ def visualise_noise_ceiling(args, nc_per_voxel, roi_indices, title, wandb_key):
     nc_2d_img = np.squeeze(nc_2d)  # (H, W)
 
     # Use a sequential colormap (0 to max) since NC is non-negative
+    from matplotlib.colors import TwoSlopeNorm
+    img = nc_2d_img.copy()
+    abs_max = max(abs(img.min()), abs(img.max()), 1e-8)
     fig, ax = plt.subplots()
-    vmax = max(nc_2d_img.max(), 0.01)
-    im = ax.imshow(nc_2d_img, cmap="hot", origin="lower", vmin=0, vmax=vmax)
-    ax.set_title(title)
-    plt.colorbar(im, ax=ax)
+    ax.imshow(img, cmap='RdBu_r', origin="lower",
+              norm=TwoSlopeNorm(vmin=-abs_max, vcenter=0, vmax=abs_max))
+    if title:
+        ax.set_title(title)
+    plt.colorbar(ax.images[0], ax=ax)
     payload[f"{wandb_key}_2d"] = wandb.Image(fig)
     plt.close(fig)
+
+    # fig, ax = plt.subplots()
+    vmax = max(nc_2d_img.max(), 0.01)
+    # im = ax.imshow(nc_2d_img, cmap="RdBu_r", origin="lower", vmin=0, vmax=vmax)
+    # ax.set_title(title)
+    # plt.colorbar(im, ax=ax)
+    # payload[f"{wandb_key}_2d"] = wandb.Image(fig)
+    # plt.close(fig)
 
     # ── Pycortex surface view ──
     fig_brain = pyplot_brain(nc_per_voxel, args=args,
