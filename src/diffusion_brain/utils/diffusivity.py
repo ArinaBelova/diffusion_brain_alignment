@@ -380,6 +380,7 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
         if fmri_min is not None and fmri_max is not None:
             x_traj[-1] = x_traj[-1].clamp(fmri_min, fmri_max)
 
+    print("max of the x_0 is {} and min is {}".format(x_traj[-1].max().item(), x_traj[-1].min().item()), flush=True)
     return x_traj[-1]
 
 @torch.inference_mode()

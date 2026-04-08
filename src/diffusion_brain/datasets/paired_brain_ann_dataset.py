@@ -126,7 +126,11 @@ class PairedBrainAnnDataset(Dataset):
         if fmri_scale is not None:
             self.fmri_scale = fmri_scale
         else:
-            if fmri_norm_mode == "global_std":
+            if fmri_norm_mode == "max_abs":
+                raw_min = float(self.fmri_data.min()) if isinstance(self.fmri_data, np.ndarray) else float(self.fmri_data.min())
+                raw_max = float(self.fmri_data.max()) if isinstance(self.fmri_data, np.ndarray) else float(self.fmri_data.max())
+                self.fmri_scale = max(abs(raw_min), abs(raw_max))
+            elif fmri_norm_mode == "global_std":
                 self.fmri_scale = float(self._chunked_std(active_only=False))
             else:  # "active_std" (default)
                 self.fmri_scale = float(self._chunked_std(active_only=True))
@@ -136,8 +140,13 @@ class PairedBrainAnnDataset(Dataset):
         # Compute min/max without allocating a full normed copy (saves ~11 GB for multi-subject).
         raw_min = float(self.fmri_data.min()) if isinstance(self.fmri_data, np.ndarray) else float(self.fmri_data.min())
         raw_max = float(self.fmri_data.max()) if isinstance(self.fmri_data, np.ndarray) else float(self.fmri_data.max())
-        self.fmri_min = raw_min / self.fmri_scale
-        self.fmri_max = raw_max / self.fmri_scale
+
+        if fmri_norm_mode == "max_abs":
+            self.fmri_min = -1.0
+            self.fmri_max = 1.0
+        else:
+            self.fmri_min = raw_min / self.fmri_scale
+            self.fmri_max = raw_max / self.fmri_scale
 
         raw_mean = float(self.fmri_data.mean()) if isinstance(self.fmri_data, np.ndarray) else float(self.fmri_data.mean())
         raw_std = float(self.fmri_data.std()) if isinstance(self.fmri_data, np.ndarray) else float(self.fmri_data.std())
