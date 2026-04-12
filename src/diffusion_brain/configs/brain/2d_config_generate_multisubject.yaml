@@ -1,0 +1,71 @@
+wandb:
+  project_name: generate-multisubject-conditional-2d-diffusion-brain
+
+state: generate
+seed: 42
+
+diffusion:
+  diffusion_type: vp
+  T: 1.0
+  eps: 1.e-3
+  beta_min: 0.1
+  beta_max: 20.0
+
+data:
+  data_name: ann-brain
+  is_2d: true
+  grid_resolution_2d: 1.0
+  resize_to_multiple: 8 # must match training config (2d_config_train_multisubject.yaml)
+  images_data_path: './src/diffusion_brain/data/data_coco/'
+  behav_data_root: './src/diffusion_brain/data/behav/'
+  subj: "subj01" # bootstrap value in multi_subject mode: the loader iterates all 8 subjects and mutates args.data.subj as a cursor for legacy helpers (ensure_fmri_roi_exists, nsd_ids lookup) and restores it after. Must be a valid subject id. Note: downstream visualisation via visualise_and_save_results reads {subj}_{roi}.npz for ROI `locations`, but those are derived from fsaverage geometry + the ROI vertex list and are identical across all 8 per-subject files, so the tag-level r-score is not biased toward this bootstrap subject.
+  multi_subject: true # routes get_dataloader -> get_ann_brain_dataloader_multisubject (returns 3-tuples with subject_id)
+  fmri_data_root: '/data/datapool3/datasets/nsd_betas_condavg/'
+  fmri_data_name: 'betas_average_fsaverage.npy'
+  ann_model: "vit_b_16"
+  ann_model_weights: "IMAGENET1K_SWAG_E2E_V1"
+  ann_activations_data_path: './src/diffusion_brain/data/ann_activations/'
+  layer_name: "encoder.layers.encoder_layer_11.mlp"
+  roi: 5
+  roi_defs_dir: './src/diffusion_brain/data/roi_defs/'
+  roi_file: "streams"
+  fmri_norm_mode: "global_std" # "active_std" "max_abs" # must match training config (2d_config_train_multisubject.yaml)
+
+model:
+  name: unet-diffusers
+  c_in: 1
+  c_out: 1
+  time_dim: 256
+  condition_mode: "additive" # must match training config — additive path consumes identity_label through ann_embedding + identity_embedding
+  cond_token_mode: "learned"
+  cond_seq_len: 8
+  token_dim: 256
+  num_classes: 8 # MUST match the nn.Embedding vocabulary stored in the checkpoint
+  block_out_channels: [64, 128, 256, 512]
+  down_block_types: ["DownBlock2D", "DownBlock2D", "DownBlock2D", "DownBlock2D"]
+  up_block_types: ["UpBlock2D", "UpBlock2D", "UpBlock2D", "UpBlock2D"]
+  remove_deep_conv: false
+  input_folder: './model_outputs/ann-brain/ann-brain-cluster'
+  run_id: 242285 # override at submit time
+  which: "best" # best / final / step_XXXXX / all / [list of tags]
+  use_autoencoder: false
+  ae_save_path: './model_outputs/ann-brain/autoencoder/'
+  ae_name: 'ae_linear'
+  ae_latent_dim: 1024
+  ae_epochs: 50
+  ae_lr: 1.e-4
+
+validation:
+  average_over_num_runs: 1
+  ode: false
+  batch_size: 64
+  n_steps: 100
+  guidance_scale: 5.0                # w_ann — ANN content CFG scale (also the single-guidance scale when dual_guidance=false)
+  dual_guidance: false               # when true, use Imagen/eDiff-I-style 3-pass CFG with independent w_ann and w_id (requires multi-subject model with identity_label). When false, single-scale CFG with 2 passes — identical to legacy behaviour.
+  guidance_scale_identity: 5.0       # w_id — subject-identity CFG scale. Only consulted when dual_guidance=true. Defaults to guidance_scale when absent.
+  label_to_generate: 0 # unused for ann-brain
+  output_folder: './outputs/generated_samples/ann-brain/'
+  num_workers: 1
+  final_model_num: 100000
+  thresholding: static
+  dynamic_thresholding_percentile: 0.995
