@@ -242,8 +242,10 @@ def get_ann_brain_dataloader_multisubject(args):
     # Create memory-mapped files for concatenated fMRI data
     # Use LOCAL_JOB_DIR (fast local scratch) if available, else tempdir
     scratch_dir = os.environ.get("LOCAL_JOB_DIR", tempfile.gettempdir())
-    train_mmap_path = os.path.join(scratch_dir, "concat_train_fmri.npy")
-    test_mmap_path = os.path.join(scratch_dir, "concat_test_fmri.npy")
+    dim_tag = "2d" if args.data.is_2d else "1d"
+    mmap_suffix = f"_roi{args.data.roi}_{dim_tag}_{len(per_subject)}subj"
+    train_mmap_path = os.path.join(scratch_dir, f"concat_train_fmri{mmap_suffix}.npy")
+    test_mmap_path = os.path.join(scratch_dir, f"concat_test_fmri{mmap_suffix}.npy")
 
     concat_train_fmri = np.lib.format.open_memmap(
         train_mmap_path, mode='w+', dtype=sample_dtype,
@@ -279,6 +281,8 @@ def get_ann_brain_dataloader_multisubject(args):
 
     concat_train_fmri.flush()
     concat_test_fmri.flush()
+    os.chmod(train_mmap_path, 0o777)
+    os.chmod(test_mmap_path, 0o777)
 
     args.data.subj = original_subj  # restore
 

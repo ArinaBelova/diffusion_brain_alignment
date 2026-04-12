@@ -3,15 +3,304 @@ import os
 import re
 import wandb
 import numpy as np
+from scipy.stats import pearsonr, ttest_1samp
 
 from diffusion_brain.utils.diffusivity import generate_samples, get_diffusion
 from diffusion_brain.utils.setup import parse_args_and_setup_wandb
 from diffusion_brain.utils.visualise import visualise_and_save_results, pyplot_brain, fmri_to_wandb_image
+
+N_PREVIEW_PER_SUBJECT = 3
 from diffusion_brain.models import set_model, ANNTokenizer
 from diffusion_brain.models.autoencoder import LinearAutoencoder, get_linear_autoencoder
 from diffusion_brain.data_utils import get_dataloader
-from diffusion_brain.utils.fmri_behav_data_utils import signal_to_2d
+from diffusion_brain.utils.fmri_behav_data_utils import signal_to_2d, ALL_SUBJECTS
 from diffusion_brain.utils.grad_updaters import EMAModel
+
+FDR_ALPHA = 0.05
+
+
+def _benjamini_hochberg(p_values, alpha=0.05):
+    """Benjamini-Hochberg FDR correction. Returns (reject, p_corrected).
+
+    Mirrors the implementation in train_sklearn_group.py so per-subject
+    generation stats are directly comparable to the Ridge baseline.
+    """
+    m = len(p_values)
+    sort_idx = np.argsort(p_values)
+    sorted_p = p_values[sort_idx]
+
+    p_corrected = np.empty(m)
+    cummin = 1.0
+    for i in range(m - 1, -1, -1):
+        adjusted = sorted_p[i] * m / (i + 1)
+        cummin = min(cummin, adjusted)
+        p_corrected[sort_idx[i]] = min(cummin, 1.0)
+
+    reject = p_corrected <= alpha
+    return reject, p_corrected
+
+
+def _load_subject_locations_2d(args, subj):
+    """Load (y_coords, x_coords) for a subject's ROI in the 2D flatmap grid."""
+    locations_load_path = os.path.join(
+        args.data.roi_defs_dir,
+        f"roi_preselected_extended_2d_images_res_{args.data.grid_resolution_2d}",
+        f"{args.data.roi_file}",
+        f"{subj}_{args.data.roi}.npz",
+    )
+    locations_roi = np.load(locations_load_path, allow_pickle=True)["locations"]
+    return locations_roi[0], locations_roi[1]  # y_coords, x_coords
+
+
+def _per_voxel_r(pred, true):
+    """Per-voxel Pearson r. Inputs: (N_images, n_voxels) numpy arrays."""
+    n_voxels = pred.shape[1]
+    r = np.full(n_voxels, np.nan, dtype=np.float64)
+    for v in range(n_voxels):
+        p = pred[:, v]
+        t = true[:, v]
+        # pearsonr raises on zero variance — guard to keep going
+        if np.std(p) == 0 or np.std(t) == 0:
+            continue
+        r[v] = pearsonr(t, p)[0]
+    return r
+
+
+def _evaluate_per_subject_and_group(
+    generated_samples_per_model,
+    true_fmri,
+    subject_ids,
+    args,
+    step_num,
+    model_name,
+):
+    """Compute per-subject per-voxel r, print neatly, and log group stats.
+
+    Returns (per_subject_mean_r, group_mean_r, n_significant) for the caller,
+    or (None, None, None) when group stacking is not possible.
+    """
+    # Convert everything to numpy for downstream scipy calls
+    gen_np = generated_samples_per_model.cpu().numpy() if isinstance(
+        generated_samples_per_model, torch.Tensor) else np.asarray(generated_samples_per_model)
+    true_np = true_fmri.cpu().numpy() if isinstance(true_fmri, torch.Tensor) else np.asarray(true_fmri)
+    sid_np = subject_ids.cpu().numpy() if isinstance(subject_ids, torch.Tensor) else np.asarray(subject_ids)
+
+    unique_ids = sorted(np.unique(sid_np).tolist())
+    header = f"Per-subject generation r-scores ({model_name})"
+    print(f"\n{'=' * 60}\n{header}\n{'=' * 60}", flush=True)
+
+    # Gather per-subject per-voxel r arrays. Keep track of voxel counts so we
+    # can decide whether group stacking (t-test + BH-FDR) is feasible.
+    per_subject_r = []         # list of (n_voxels_subj,) arrays
+    per_subject_mean = {}      # subj_idx -> mean r (for quick summary)
+    per_subject_median = {}
+    per_subject_previews = {}  # subj_name -> {"generated_i": wandb.Image, "true_i": wandb.Image}
+
+    # Grid geometry captured on the first 2D subject iteration; reused for the
+    # group-level flatmaps after the loop. Per CLAUDE.md, `locations` arrays are
+    # identical across all 8 per-subject ROI cache files, so taking them from any
+    # single subject is safe.
+    image_shape_ref = None
+    y_coords_ref = None
+    x_coords_ref = None
+
+    for subj_idx in unique_ids:
+        mask = sid_np == subj_idx
+        gen_s = gen_np[mask]
+        true_s = true_np[mask]
+        subj_name = ALL_SUBJECTS[subj_idx] if 0 <= subj_idx < len(ALL_SUBJECTS) else f"subj_id_{subj_idx}"
+
+        # Keep a copy of the raw 2D flatmap slices before we collapse them
+        # down to voxel time series — we need the (H, W) grid to render
+        # wandb preview images below.
+        if args.data.is_2d:
+            gen_flat = gen_s.squeeze(1) if gen_s.ndim == 4 else gen_s  # (N, H, W)
+            true_flat = true_s.squeeze(1) if true_s.ndim == 4 else true_s
+            # Extract the subject's ROI voxel time series from the 2D flatmap.
+            y_coords, x_coords = _load_subject_locations_2d(args, subj_name)
+            gen_vox = gen_flat[:, y_coords, x_coords]
+            true_vox = true_flat[:, y_coords, x_coords]
+        else:
+            # 1D: samples are already (N, n_voxels) or (N, 1, n_voxels)
+            gen_flat = None
+            true_flat = None
+            if gen_s.ndim == 3:
+                gen_s = gen_s.squeeze(1)
+            if true_s.ndim == 3:
+                true_s = true_s.squeeze(1)
+            gen_vox = gen_s
+            true_vox = true_s
+
+        r_per_voxel = _per_voxel_r(gen_vox, true_vox)
+
+        n_img, n_vox = gen_vox.shape
+        mean_r = float(np.nanmean(r_per_voxel))
+        median_r = float(np.nanmedian(r_per_voxel))
+        per_subject_mean[subj_idx] = mean_r
+        per_subject_median[subj_idx] = median_r
+        per_subject_r.append(r_per_voxel)
+
+        print(
+            f"  {subj_name}: N={n_img}, n_voxels={n_vox}, "
+            f"mean r = {mean_r:+.4f}, median r = {median_r:+.4f}",
+            flush=True,
+        )
+
+        # Build per-subject preview images (first N_PREVIEW_PER_SUBJECT samples
+        # of this subject's slice). For 2D we log the full flatmap as a single
+        # *list* of wandb.Image objects per row — wandb renders a list under
+        # one key as one media panel with all images side-by-side, which keeps
+        # the 3 generated and 3 true previews on one screen. For 1D we skip the
+        # preview since there is no natural image to render here.
+        subj_preview = {}
+        if args.data.is_2d and gen_flat is not None:
+            n_preview = min(N_PREVIEW_PER_SUBJECT, gen_flat.shape[0])
+            generated_imgs = [
+                fmri_to_wandb_image(gen_flat[i], title=f"{subj_name} generated {i}")
+                for i in range(n_preview)
+            ]
+            true_imgs = [
+                fmri_to_wandb_image(true_flat[i], title=f"{subj_name} true {i}")
+                for i in range(n_preview)
+            ]
+            # Per-subject per-voxel r-score brain map — symmetric to the pooled
+            # r_image logged by `visualise_and_save_results`, but restricted to
+            # this subject's test slice so subjects can be compared visually.
+            # NaN voxels (zero variance) are filled with 0 for rendering.
+            subj_image_shape = gen_flat.shape[1:]
+            r_img_subj = np.zeros(subj_image_shape, dtype=np.float64)
+            r_img_subj[y_coords, x_coords] = np.nan_to_num(r_per_voxel, nan=0.0)
+            subj_r_image = fmri_to_wandb_image(
+                r_img_subj, title=f"{subj_name} per-voxel r ({model_name})"
+            )
+            # Both keys live under `per_subject/{subj_name}/` so they share a
+            # wandb panel section with the per-subject scalars below.
+            subj_preview[f"per_subject/{subj_name}/generated"] = generated_imgs
+            subj_preview[f"per_subject/{subj_name}/true"] = true_imgs
+            subj_preview[f"per_subject/{subj_name}/r_image"] = subj_r_image
+            per_subject_previews[subj_name] = subj_preview
+
+            # Capture shared grid geometry once for the group-level flatmaps.
+            if image_shape_ref is None:
+                image_shape_ref = subj_image_shape
+                y_coords_ref = y_coords
+                x_coords_ref = x_coords
+
+        # Per-subject scalars share the same `per_subject/{subj_name}/` prefix
+        # as the image keys above, so wandb groups them all into one section
+        # per subject (true, generated, mean_r, median_r on one screen).
+        log_payload = {
+            f"per_subject/{subj_name}/mean_r": mean_r,
+            f"per_subject/{subj_name}/median_r": median_r,
+            "model_step": step_num,
+        }
+        log_payload.update(subj_preview)
+        wandb.log(log_payload)
+
+    # Group-level statistics (requires all subjects to share voxel count).
+    voxel_counts = {len(r) for r in per_subject_r}
+    if len(voxel_counts) != 1:
+        print(
+            f"\nSkipping group t-test: subjects have heterogeneous voxel counts {voxel_counts}.",
+            flush=True,
+        )
+        return per_subject_mean, None, None
+
+    all_r = np.stack(per_subject_r, axis=0)  # (N_subj, n_voxels)
+    n_subjects, n_voxels = all_r.shape
+
+    group_mean_r = np.nanmean(all_r, axis=0)
+    overall_mean = float(np.nanmean(group_mean_r))
+
+    t_stats, p_values = ttest_1samp(all_r, popmean=0.0, axis=0, nan_policy="omit")
+    # statsmodels-free NaN handling
+    p_values = np.asarray(p_values, dtype=np.float64)
+    nan_mask = np.isnan(p_values)
+    if nan_mask.any():
+        p_values[nan_mask] = 1.0
+    reject, p_corrected = _benjamini_hochberg(p_values, alpha=FDR_ALPHA)
+    n_sig = int(reject.sum())
+
+    sig_mean = float(np.nanmean(group_mean_r[reject])) if n_sig > 0 else 0.0
+    print(f"\n{'-' * 60}\nGroup statistics across {n_subjects} subjects:", flush=True)
+    print(f"  n_voxels                         = {n_voxels}", flush=True)
+    print(f"  group mean r (all voxels)        = {overall_mean:+.4f}", flush=True)
+    print(f"  group mean r (BH-FDR q<{FDR_ALPHA})    = {sig_mean:+.4f}", flush=True)
+    print(
+        f"  significant voxels (BH-FDR q<{FDR_ALPHA}) = {n_sig}/{n_voxels} "
+        f"({100.0 * n_sig / n_voxels:.1f}%)",
+        flush=True,
+    )
+    print(f"  mean per-subject r               = {np.mean(list(per_subject_mean.values())):+.4f}", flush=True)
+    print(f"{'-' * 60}\n", flush=True)
+
+    wandb.log({
+        "group/mean_r_all_voxels": overall_mean,
+        "group/mean_r_significant": sig_mean,
+        "group/n_significant_voxels": n_sig,
+        "group/n_total_voxels": int(n_voxels),
+        "group/frac_significant": float(n_sig / n_voxels),
+        "group/mean_per_subject_r": float(np.mean(list(per_subject_mean.values()))),
+        "model_step": step_num,
+    })
+
+    # Group-level brain maps (2D only). Two complementary views:
+    #   (1) `group/r_image_all_voxels`  — unthresholded cross-subject mean r,
+    #       shows the raw effect size landscape across the ROI.
+    #   (2) `group/r_image_significant` — same map with non-significant voxels
+    #       masked to 0, so only BH-FDR-surviving voxels carry colour.
+    # Non-significant voxels map to 0 which renders as neutral on the symmetric
+    # RdBu_r colormap (indistinguishable from the ROI background, but that's
+    # acceptable here because the thresholded map is paired with the full map).
+    if args.data.is_2d and image_shape_ref is not None:
+        group_r_img_all = np.zeros(image_shape_ref, dtype=np.float64)
+        group_r_img_all[y_coords_ref, x_coords_ref] = np.nan_to_num(group_mean_r, nan=0.0)
+
+        sig_values = np.where(reject, np.nan_to_num(group_mean_r, nan=0.0), 0.0)
+        group_r_img_sig = np.zeros(image_shape_ref, dtype=np.float64)
+        group_r_img_sig[y_coords_ref, x_coords_ref] = sig_values
+
+        wandb.log({
+            "group/r_image_all_voxels": fmri_to_wandb_image(
+                group_r_img_all,
+                title=f"Group mean r ({n_subjects} subjects, all voxels) — {model_name}",
+            ),
+            "group/r_image_significant": fmri_to_wandb_image(
+                group_r_img_sig,
+                title=(
+                    f"Group mean r (BH-FDR q<{FDR_ALPHA}, "
+                    f"{n_sig}/{n_voxels} sig) — {model_name}"
+                ),
+            ),
+            "model_step": step_num,
+        })
+
+    # Persist raw per-subject r arrays next to the other generation outputs
+    # so downstream analysis mirrors train_sklearn_group.npz format.
+    try:
+        output_dir = os.path.join(
+            getattr(args.validation, "output_folder", "./model_outputs/ann-brain/"),
+            str(args.jobid),
+        )
+        os.makedirs(output_dir, exist_ok=True)
+        safe_model_name = re.sub(r"[^0-9A-Za-z_\-]", "_", str(model_name))
+        np.savez(
+            os.path.join(output_dir, f"group_generation_results_{safe_model_name}.npz"),
+            all_r=all_r,
+            group_mean_r=group_mean_r,
+            t_stats=t_stats,
+            p_values=p_values,
+            p_corrected=p_corrected,
+            reject=reject,
+            subject_ids=np.array(unique_ids),
+            subject_names=np.array(
+                [ALL_SUBJECTS[i] if 0 <= i < len(ALL_SUBJECTS) else f"subj_id_{i}" for i in unique_ids]
+            ),
+        )
+    except Exception as e:
+        print(f"WARNING: failed to save group_generation_results npz: {e}", flush=True)
+
+    return per_subject_mean, overall_mean, n_sig
 
 
 _STEP_TAG_RE = re.compile(r"step_(\d+)")
@@ -28,7 +317,21 @@ def _resolve_model_file(input_folder, suffix):
     return f"checkpoint_{suffix}.pth"
 
 
-def _infer_wandb_step(model_name, args, model_dir=None):
+def _infer_wandb_step(model_name, args, model_dir=None, checkpoint_step=None):
+    """Return an integer step for wandb logging.
+
+    Prefers the real training step stored inside the checkpoint (read at load
+    time and passed in as ``checkpoint_step``). Falls back to parsing the
+    filename (``step_1234``), then to scanning the directory for the latest
+    numbered checkpoint when the tag is ``final``. Only returns None if no
+    source is available.
+    """
+    if checkpoint_step is not None:
+        try:
+            return int(checkpoint_step)
+        except (TypeError, ValueError):
+            pass
+
     match = _STEP_TAG_RE.search(str(model_name))
     if match:
         return int(match.group(1))
@@ -161,6 +464,7 @@ def generate_sample_loop(args):
     diffusion_process = get_diffusion(args, device=DEVICE)
     generated_samples = {}
     true_fmri_per_model = {}
+    model_step_per_model = {}  # tag -> training step read from checkpoint
 
     if str(args.model.which).lower() == "all":
         print("Testing all the models in the model folder...")
@@ -201,6 +505,11 @@ def generate_sample_loop(args):
         model_path = os.path.join(args.model.input_folder, model_file)
         print("model path is ", model_path)
         checkpoint = torch.load(model_path, map_location=DEVICE)
+        # Read the true training step from the checkpoint itself — this is
+        # authoritative for "best"/"final" tags where the filename doesn't
+        # encode a step number. Falls back to None for legacy checkpoints
+        # that don't carry a "step" field.
+        step_from_checkpoint = checkpoint.get("step") if isinstance(checkpoint, dict) else None
         model = set_model(args)
 
         # Support both bundled checkpoint format (checkpoint_*.pth) and
@@ -315,8 +624,9 @@ def generate_sample_loop(args):
         tag = match.group(1) if match else filename
         generated_samples[f"{tag}"] = generated_samples_one_model
         true_fmri_per_model[f"{tag}"] = (true_fmri_concat, subject_ids_concat)
+        model_step_per_model[f"{tag}"] = step_from_checkpoint
 
-    return generated_samples, true_fmri_per_model
+    return generated_samples, true_fmri_per_model, model_step_per_model
 
 def main(): 
     args = parse_args_and_setup_wandb()
@@ -334,11 +644,17 @@ def main():
     wandb.define_metric("*", step_metric="model_step")
     if args.data.data_name == "ann-brain":
         print("Using ANN-Brain dataset, we will generate samples and visualise them on the brain surface.")
-        generated_samples, true_fmri_per_model = generate_sample_loop(args)
+        generated_samples, true_fmri_per_model, model_step_per_model = generate_sample_loop(args)
         print(f"Generating the visualisations with guidance scale {args.validation.guidance_scale})")
         for model_name, generated_samples_per_model in generated_samples.items():
             print("Visualising results for model at step: ", model_name)
-            step_num = _infer_wandb_step(model_name, args, model_dir=args.model.input_folder)
+            step_num = _infer_wandb_step(
+                model_name,
+                args,
+                model_dir=args.model.input_folder,
+                checkpoint_step=model_step_per_model.get(model_name),
+            )
+            print(f"  → wandb model_step = {step_num} (from {'checkpoint' if model_step_per_model.get(model_name) is not None else 'filename/fallback'})", flush=True)
             true_fmri, subject_ids = true_fmri_per_model[model_name]
             visualise_and_save_results(
                 generated_samples_per_model,
@@ -348,25 +664,19 @@ def main():
                 step_num=step_num,
             )
 
-            # Per-subject evaluation for multi-subject models
+            # Per-subject evaluation for multi-subject models. Mirrors the
+            # output format of train_sklearn_group.py (per-subject Pearson r,
+            # group mean r, BH-FDR corrected significance) so generation
+            # performance can be compared directly to the Ridge baseline.
             if subject_ids is not None:
-                from diffusion_brain.utils.visualise import get_r_across_images_2d_data, get_r_across_images_1d_data
-                unique_subjects = subject_ids.unique().tolist()
-                print(f"Computing per-subject r-scores for {len(unique_subjects)} subjects...", flush=True)
-                for subj_idx in unique_subjects:
-                    mask = subject_ids == subj_idx
-                    gen_subj = generated_samples_per_model[mask]
-                    true_subj = true_fmri[mask]
-                    if args.data.is_2d:
-                        r_images, r_voxels = get_r_across_images_2d_data(gen_subj, true_subj)
-                    else:
-                        r_images, r_voxels = get_r_across_images_1d_data(gen_subj, true_subj)
-                    print(f"  subj{subj_idx:02d}: r_images={r_images:.4f}, r_voxels={r_voxels:.4f}", flush=True)
-                    wandb.log({
-                        f"per_subject/subj{subj_idx:02d}_r_images": r_images,
-                        f"per_subject/subj{subj_idx:02d}_r_voxels": r_voxels,
-                        "model_step": step_num,
-                    })
+                _evaluate_per_subject_and_group(
+                    generated_samples_per_model,
+                    true_fmri,
+                    subject_ids,
+                    args,
+                    step_num,
+                    model_name,
+                )
             
             if not args.data.is_2d:
                 # I want to see non-interpolated on pycortex flatmap images!

@@ -30,3 +30,4 @@ test.ipynb
 *.mgz
 *.xfm
 *.blend
+build/*

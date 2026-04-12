@@ -151,15 +151,33 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
     x_traj = [x_0]
     # I preliminary removed all the .long() casting to avoid CUDA crash
         
+    # Dual-guidance mode: independent CFG scales for ANN content vs subject identity.
+    # When enabled, the additive branch below does 3 forward passes (uncond,
+    # ann-only, full) instead of 2 (uncond, full) and composes them as:
+    #   score = s_uncond + w_ann*(s_ann - s_uncond) + w_id*(s_full - s_ann)
+    # When w_ann == w_id, this reduces to the standard single-guidance formula,
+    # so legacy single-scale jobs are untouched. Only active for the additive
+    # branch (unet-diffusers with condition_mode="additive") and only when
+    # identity_label is provided.
+    dual_guidance_flag = bool(getattr(args.validation, "dual_guidance", False)) if args is not None else False
+    guidance_scale_identity = float(
+        getattr(args.validation, "guidance_scale_identity", guidance_scale)
+    ) if args is not None else guidance_scale
+
     for idx, t in enumerate(time_grid):
         x = x_traj[idx]
         t = torch.tensor([t]).to(device)
         determ_drift = f(x, t)
-        z = torch.randn(n_traj, *dim_x).to(device) 
+        z = torch.randn(n_traj, *dim_x).to(device)
         if idx != len(time_grid) - 1:
-            diffusivity_sample = g(x, t) * torch.sqrt(torch.abs(dt)) * z 
+            diffusivity_sample = g(x, t) * torch.sqrt(torch.abs(dt)) * z
         else:
-            diffusivity_sample = 0.0 
+            diffusivity_sample = 0.0
+
+        # Reset per-iteration. The additive branch sets this when running the
+        # 3-pass dual-guidance CFG decomposition; the final composition step
+        # checks it to pick the single-vs-dual guidance formula.
+        score_ann_only = None
 
         # TODO: do we really need this clause? It's already covered by below guidance_scale logic
         # if guidance_scale == 1.0:
@@ -202,11 +220,32 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
                 score_uncond = score_fn(x, time_unet, encoder_hidden_states=None, ann_signal=None, identity_label=None).sample
                 # Conditional: pass real ANN signal and identity label
                 score_cond = score_fn(x, time_unet, encoder_hidden_states=None, ann_signal=cond.float(), identity_label=identity_label).sample
-            
+
+                # Dual-guidance: extra pass with ANN only (no identity). Used to
+                # decompose the CFG direction into "content" (w_ann) and
+                # "identity" (w_id) terms. Only meaningful when we actually
+                # have a real identity_label to drop in the middle pass.
+                if dual_guidance_flag and identity_label is not None:
+                    score_ann_only = score_fn(
+                        x, time_unet,
+                        encoder_hidden_states=None,
+                        ann_signal=cond.float(),
+                        identity_label=None,
+                    ).sample
+
                 if debug_conditioning and idx == 0:
                     delta = (score_cond - score_uncond).abs().mean().item()
                     rel_delta = delta / (score_cond.abs().mean().item() + 1e-8)
-                    if cond.shape[0] > 1:
+                    if score_ann_only is not None:
+                        delta_id = (score_cond - score_ann_only).abs().mean().item()
+                        print(
+                            f"[dual-guidance] unet2d-additive step0: "
+                            f"Δ(full-uncond)={delta:.3e}, rel={rel_delta:.3e}, "
+                            f"Δ(full-ann_only)={delta_id:.3e} | "
+                            f"w_ann={guidance_scale}, w_id={guidance_scale_identity}",
+                            flush=True,
+                        )
+                    elif cond.shape[0] > 1:
                         perm = torch.randperm(cond.shape[0], device=cond.device)
                         score_shuf = score_fn(x, time_unet, encoder_hidden_states=None, ann_signal=cond[perm].float(), identity_label=identity_label).sample
                         delta_shuf = (score_cond - score_shuf).abs().mean().item()
@@ -320,7 +359,17 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
             score_uncond = score_fn(x, t, y_empty)
             score_cond = score_fn(x, t, y_target)
         
-        score = ((1 - guidance_scale) * score_uncond + guidance_scale * score_cond) / torch.sqrt(diffusion_process.var(t))
+        if score_ann_only is not None:
+            # Dual-guidance CFG (Imagen / eDiff-I style):
+            #   score = s_uncond + w_ann*(s_ann - s_uncond) + w_id*(s_full - s_ann)
+            # Independent scales for ANN content vs subject identity.
+            score = (
+                score_uncond
+                + guidance_scale * (score_ann_only - score_uncond)
+                + guidance_scale_identity * (score_cond - score_ann_only)
+            ) / torch.sqrt(diffusion_process.var(t))
+        else:
+            score = ((1 - guidance_scale) * score_uncond + guidance_scale * score_cond) / torch.sqrt(diffusion_process.var(t))
 
         
         ############### DEBUG: Check if scores differ by label#################################
@@ -372,15 +421,24 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
 
         x_traj.append(next_step)
 
+    def scale_to_range(tensor, new_min=0.0, new_max=1.0):
+        t_min = tensor.min()
+        t_max = tensor.max()
+        return (tensor - t_min) / (t_max - t_min) * (new_max - new_min) + new_min
+
     thresholding = getattr(args.validation, "thresholding", "none") if args is not None else "none"
-    if thresholding == "static":
+    if thresholding != "none":
         # Final clamp to data range for static thresholding (Saharia et al., 2022)
         fmri_min = getattr(args.data, "fmri_min", None)
         fmri_max = getattr(args.data, "fmri_max", None)
         if fmri_min is not None and fmri_max is not None:
-            x_traj[-1] = x_traj[-1].clamp(fmri_min, fmri_max)
+            if thresholding == "static":
+                print("Clamping final output with static thresholding to data range [{}, {}]".format(fmri_min, fmri_max), flush=True)
+                x_traj[-1] = x_traj[-1].clamp(fmri_min, fmri_max)
+            elif thresholding == "scaling":
+                print("Scaling final output to data range [{}, {}]".format(fmri_min, fmri_max), flush=True)
+                x_traj[-1] = scale_to_range(x_traj[-1], new_min=fmri_min, new_max=fmri_max)
 
-    print("max of the x_0 is {} and min is {}".format(x_traj[-1].max().item(), x_traj[-1].min().item()), flush=True)
     return x_traj[-1]
 
 @torch.inference_mode()

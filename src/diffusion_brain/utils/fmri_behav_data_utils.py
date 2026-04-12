@@ -1,14 +1,39 @@
 # Courtesy of: https://github.com/adriendoerig/visuo_llm/blob/main/src/nsd_visuo_semantics/utils/nsd_get_data_light.py
 
-import os 
+import os
 import numpy as np
 import pandas as pd
-import glob 
+import glob
 import re
 import torch
 import nibabel as nb
+import hashlib
+import getpass
+import tempfile
 from filelock import FileLock
 import cortex
+
+
+def _user_scoped_lock_path(save_path):
+    """Return a per-user lock path for `save_path` so multi-user shared caches
+    don't hit permission errors on each other's `.lock` files.
+
+    The cache files themselves (e.g. `roi_defs/.../subj01_5.npz`) live on
+    shared storage and are read by everyone, but the `filelock.FileLock`
+    sentinel needs read-write access to acquire `fcntl.flock`. Redirecting it
+    to `$TMPDIR/diffusion_brain_locks_<user>/<sha1>.lock` means each user
+    writes their own locks and never tries to open another user's.
+
+    Note: cross-user coordination on first-time creation is lost (two users
+    kicking off fresh preprocessing simultaneously may both write), but this
+    is extremely rare — caches are built once and reused — and the content
+    is deterministic so the last writer wins with correct data.
+    """
+    user = getpass.getuser()
+    digest = hashlib.sha1(save_path.encode("utf-8")).hexdigest()[:16]
+    lock_dir = os.path.join(tempfile.gettempdir(), f"diffusion_brain_locks_{user}")
+    os.makedirs(lock_dir, exist_ok=True)
+    return os.path.join(lock_dir, f"{digest}.lock")
 
 import scipy
 import matplotlib.pyplot as plt
@@ -362,34 +387,45 @@ def ensure_fmri_roi_exists(args):
             f"{args.data.subj}_{args.data.roi}{variant_suffix}.pt"
         )
 
+    # Fast path: if the cache file already exists, return without ever
+    # touching the lock. This is the common case in multi-user setups where
+    # caches are pre-built by one user on shared storage — read-only users
+    # must not open another user's .lock file (PermissionError).
+    if os.path.isfile(save_path):
+        print(f"fMRI ROI data found at {save_path}", flush=True)
+        return save_path
+
     if not os.path.exists(os.path.dirname(save_path)):
-        os.makedirs(os.path.dirname(save_path))    
-        
-    lock_path = save_path + ".lock"
-    
+        os.makedirs(os.path.dirname(save_path))
+
+    # First-time creation: acquire a user-scoped lock in the user's tmpdir
+    # (not next to the cache file), so concurrent users don't collide on
+    # each other's .lock file permissions.
+    lock_path = _user_scoped_lock_path(save_path)
+
     with FileLock(lock_path):
         if not os.path.isfile(save_path):
             print(f"fMRI ROI data not found at {save_path}. Preprocessing...", flush=True)
             preprocess_fmri_roi(args, save_path)
         else:
             print(f"fMRI ROI data found at {save_path}", flush=True)
-    
+
     return save_path
 
 ################ RDM manipulations ########################
-def compute_rdm(data, args, regime="train", method='correlation'):
-    train_nsd_ids, test_nsd_ids, _, _ = get_train_test_indices(args)
+# def compute_rdm(data, args, regime="train", method='correlation'):
+#     train_nsd_ids, test_nsd_ids, _, _ = get_train_test_indices(args)
 
-    nsd_ids = train_nsd_ids if regime == 'train' else test_nsd_ids
-    obs_descriptors = {'conds': [f'stim_{i}' for i in nsd_ids]}
+#     nsd_ids = train_nsd_ids if regime == 'train' else test_nsd_ids
+#     obs_descriptors = {'conds': [f'stim_{i}' for i in nsd_ids]}
 
-    # 3. Create the rsatoolbox Dataset object
-    dataset = rsatoolbox.data.Dataset(
-        measurements=data,
-        obs_descriptors=obs_descriptors
-    )
-    rdm = rsatoolbox.rdm.calc_rdm(dataset, method=method)
-    return rdm
+#     # 3. Create the rsatoolbox Dataset object
+#     dataset = rsatoolbox.data.Dataset(
+#         measurements=data,
+#         obs_descriptors=obs_descriptors
+#     )
+#     rdm = rsatoolbox.rdm.calc_rdm(dataset, method=method)
+#     return rdm
 
 ########################## 1D -> 2D utils ##########################
 def signal_to_2d(args, **kwargs):

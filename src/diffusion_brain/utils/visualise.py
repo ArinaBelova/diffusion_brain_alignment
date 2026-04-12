@@ -143,13 +143,21 @@ def get_r_across_images_2d_data(args, generated_data_roi_2d, true_fmri, step_num
     # Plot generated and true fMRI with the same RdBu_r colorscheme as the r-score map
     n_preview = min(3, generated_data_roi_2d.shape[0])
 
+    # In multi-subject mode the pooled tensor is the concatenation of all 8
+    # subjects' test slices, so the first few indices happen to be subj01 — tag
+    # the preview titles so the reader knows these are pooled-order previews
+    # and the per-subject panels (logged separately from generate.py) are the
+    # authoritative per-subject views.
+    is_multi_subj = getattr(args.data, "multi_subject", False)
+    preview_prefix = "Pooled " if is_multi_subj else ""
+
     generated_data_to_report_wandb = [
-        fmri_to_wandb_image(generated_data_roi_2d[i], title=f"Generated sample {i}")
+        fmri_to_wandb_image(generated_data_roi_2d[i], title=f"{preview_prefix}Generated sample {i}")
         for i in range(n_preview)
     ]
 
     true_fmri_to_report_wandb = [
-        fmri_to_wandb_image(true_fmri[i], title=f"True fMRI sample {i}")
+        fmri_to_wandb_image(true_fmri[i], title=f"{preview_prefix}True fMRI sample {i}")
         for i in range(n_preview)
     ]
 
@@ -192,7 +200,11 @@ def get_r_across_images_2d_data(args, generated_data_roi_2d, true_fmri, step_num
 
     plt.imshow(r_img, cmap='RdBu_r', origin="lower", norm=norm)
     plt.colorbar()
-    plt.title(f"Correlation (r) across images for each location, resolution={args.data.grid_resolution_2d}mm")
+    pool_suffix = " (pooled across subjects)" if is_multi_subj else ""
+    plt.title(
+        f"Correlation (r) across images for each location{pool_suffix}, "
+        f"resolution={args.data.grid_resolution_2d}mm"
+    )
     fig = plt.gcf()
 
     print("Calculating r scores across voxels...", flush=True)

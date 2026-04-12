@@ -10,6 +10,8 @@ from PIL import Image
 from filelock import FileLock
 from pathlib import Path
 
+from diffusion_brain.utils.fmri_behav_data_utils import _user_scoped_lock_path
+
 def load_model(model_name: str, weights_name: str = "DEFAULT"):
     # Get model constructor and weights class
     model_fn = getattr(models, model_name)
@@ -24,7 +26,7 @@ def load_model(model_name: str, weights_name: str = "DEFAULT"):
     
     return model, weights.transforms()
 
-def precompute_activations(indices_to_extract, args, data_name="imgBrick"):
+def precompute_activations(indices_to_extract, args, data_name="imgBrick", save_path=None):
     """
     Extract activations - MUST be called from main process before DataLoader.
     Returns tensor of shape [n_samples, *feature_dims]
@@ -72,11 +74,12 @@ def precompute_activations(indices_to_extract, args, data_name="imgBrick"):
     activations = torch.stack(activations, dim=0)
     
     # Save
-    save_path = os.path.join(
-        args.data.ann_activations_data_path, 
-        model_name,
-        f"activations_weights_{weights_name}_layer_{args.data.layer_name}_{len(indices)}_samples.pt"
-    )
+    if save_path is None:
+        save_path = os.path.join(
+            args.data.ann_activations_data_path,
+            model_name,
+            f"activations_weights_{weights_name}_layer_{args.data.layer_name}_{len(indices)}_samples.pt"
+        )
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     torch.save(activations, save_path)
     print(f"Saved activations to {save_path}, shape: {activations.shape}")
@@ -85,12 +88,22 @@ def precompute_activations(indices_to_extract, args, data_name="imgBrick"):
 
 
 def ensure_activations_exist(activations_path, indices_to_extract, args):
-    """Thread-safe check and extraction."""
-    lock_path = activations_path + ".lock"
-    
+    """Thread-safe check and extraction.
+
+    Fast path: if the activations cache already exists, return without
+    touching any lock. This avoids PermissionError on shared caches where a
+    different user owns the `.lock` sentinel. First-time creation uses a
+    per-user lock under `$TMPDIR/diffusion_brain_locks_<user>/`.
+    """
+    if os.path.isfile(activations_path):
+        print(f"Activations found at {activations_path}")
+        return
+
+    lock_path = _user_scoped_lock_path(activations_path)
+
     with FileLock(lock_path):
         if not os.path.isfile(activations_path):
             print(f"Activations not found at {activations_path}. Extracting...")
-            precompute_activations(indices_to_extract, args)
+            precompute_activations(indices_to_extract, args, save_path=activations_path)
         else:
             print(f"Activations found at {activations_path}")
