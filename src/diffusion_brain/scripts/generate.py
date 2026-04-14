@@ -565,10 +565,19 @@ def generate_sample_loop(args):
         true_fmri_list = []
         subject_ids_list = []
 
+        # Cross-subject evaluation: load multi-subject test data for per-subject
+        # metrics, but don't pass identity_label to the model (it wasn't trained
+        # with subject conditioning). Set data.cross_subject_eval: true in config.
+        cross_subject_eval = bool(getattr(args.data, "cross_subject_eval", False))
+        if cross_subject_eval:
+            print("Cross-subject evaluation mode: identity_label will NOT be passed to the model", flush=True)
+
         for idx, batch in enumerate(gen_dataloader):
             # Dataset returns 2-tuple (fmri, ann) or 3-tuple (fmri, ann, subject_id)
             true_fmri, cond = batch[0], batch[1]
-            identity_label = batch[2].to(DEVICE) if len(batch) > 2 else None
+            subject_id = batch[2] if len(batch) > 2 else None
+            # Pass identity to model only if trained with it (not cross-subject eval)
+            identity_label = None if cross_subject_eval else (subject_id.to(DEVICE) if subject_id is not None else None)
             cond = cond.to(DEVICE)
 
             print(f"Generating samples with guidance strength {args.validation.guidance_scale} for batch {idx+1} out of {len(gen_dataloader)}...", flush=True)
@@ -608,8 +617,8 @@ def generate_sample_loop(args):
 
             generated_samples_list.append(generated_samples_one_model_one_cond.cpu())
             true_fmri_list.append(true_fmri.cpu())
-            if identity_label is not None:
-                subject_ids_list.append(identity_label.cpu())
+            if subject_id is not None:
+                subject_ids_list.append(subject_id.cpu())
 
         # Concatenate all batches
         generated_samples_one_model = torch.cat(generated_samples_list, dim=0)

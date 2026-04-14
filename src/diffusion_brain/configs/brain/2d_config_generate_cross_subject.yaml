@@ -1,0 +1,74 @@
+# Cross-subject evaluation config: loads all 8 subjects' test data but
+# generates WITHOUT identity conditioning (model was trained on a single subject).
+# Measures how well a single-subject model generalises to other subjects.
+
+wandb:
+  project_name: generate-cross-subject-2d-diffusion-brain
+
+state: generate
+seed: 42
+
+diffusion:
+  diffusion_type: vp
+  T: 1.0
+  eps: 1.e-3
+  beta_min: 0.1
+  beta_max: 20.0
+
+data:
+  data_name: ann-brain
+  is_2d: true
+  grid_resolution_2d: 1.0
+  resize_to_multiple: 8 # must match training config
+  images_data_path: './src/diffusion_brain/data/data_coco/'
+  behav_data_root: './src/diffusion_brain/data/behav/'
+  subj: "subj01" # bootstrap value for multi_subject loader
+  multi_subject: true # load all 8 subjects' test data
+  cross_subject_eval: true # do NOT pass identity_label to the model — it wasn't trained with subject conditioning
+  fmri_data_root: '/data/datapool3/datasets/nsd_betas_condavg/'
+  fmri_data_name: 'betas_average_fsaverage.npy'
+  ann_model: "vit_b_16"
+  ann_model_weights: "IMAGENET1K_SWAG_E2E_V1"
+  ann_activations_data_path: './src/diffusion_brain/data/ann_activations/'
+  layer_name: "encoder.layers.encoder_layer_11.mlp"
+  roi: 5
+  roi_defs_dir: './src/diffusion_brain/data/roi_defs/'
+  roi_file: "streams"
+  fmri_norm_mode: "global_std" # must match training config
+
+model:
+  name: unet-diffusers
+  c_in: 1
+  c_out: 1
+  time_dim: 256
+  condition_mode: "additive" # must match training config
+  cond_token_mode: "learned"
+  cond_seq_len: 8
+  token_dim: 256
+  num_classes: 8 # must match checkpoint's nn.Embedding vocabulary (always 8 even for single-subject models)
+  block_out_channels: [64, 128, 256, 512] # must match training config (3-level small config)
+  down_block_types: ["DownBlock2D", "DownBlock2D", "DownBlock2D", "DownBlock2D"]
+  up_block_types: ["UpBlock2D", "UpBlock2D", "UpBlock2D", "UpBlock2D"]
+  remove_deep_conv: false
+  input_folder: './model_outputs/ann-brain/ann-brain-cluster'
+  run_id: 000000 # override at submit time with the single-subject job ID
+  which: "best"
+  use_autoencoder: false
+  ae_save_path: './model_outputs/ann-brain/autoencoder/'
+  ae_name: 'ae_linear'
+  ae_latent_dim: 1024
+  ae_epochs: 50
+  ae_lr: 1.e-4
+
+validation:
+  average_over_num_runs: 1
+  ode: false
+  batch_size: 64
+  n_steps: 100
+  guidance_scale: 5.0
+  label_to_generate: 0
+  output_folder: './outputs/generated_samples/ann-brain/'
+  num_workers: 1
+  final_model_num: 100000
+  thresholding: static
+  dynamic_thresholding_percentile: 0.995
