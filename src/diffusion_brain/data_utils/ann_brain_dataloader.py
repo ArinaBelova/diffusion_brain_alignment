@@ -321,12 +321,20 @@ def get_ann_brain_dataloader_multisubject(args):
     )
 
     # 5. DataLoaders
+    # Fix shuffle order in generation so preview panels are reproducible
+    # across checkpoints; during training validation the order doesn't matter.
+    test_dl_kwargs = {}
+    if args.state != "train":
+        test_g = torch.Generator()
+        test_g.manual_seed(args.seed)
+        test_dl_kwargs["generator"] = test_g
     test_dataloader = torch.utils.data.DataLoader(
         test_dataset,
         batch_size=args.validation.batch_size,
-        shuffle=False,
+        shuffle=True,
         num_workers=args.validation.num_workers,
-        drop_last=True,
+        drop_last=False,
+        **test_dl_kwargs,
     )
 
     if args.state != "train":

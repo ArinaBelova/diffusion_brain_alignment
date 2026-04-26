@@ -303,6 +303,226 @@ def _evaluate_per_subject_and_group(
     return per_subject_mean, overall_mean, n_sig
 
 
+def _evaluate_cross_subject_confusion(
+    generated_samples_per_model,
+    true_fmri,
+    subject_ids,
+    stim_keys,
+    args,
+    step_num,
+    model_name,
+):
+    """Compute an N_subj × N_subj confusion matrix of per-voxel Pearson r.
+
+    Entry (i, j) = mean-across-voxels Pearson r between
+        predictions generated with identity_label=i, reindexed by stimulus,
+    and
+        subject j's true fMRI response to the same stimuli.
+
+    Requires stim_keys (act_idx per sample) to align subjects. For the
+    averaged variant every subject sees the 515 common_515 stimuli exactly
+    once, so each subject's slice has an identical sorted stim_keys set —
+    we assert that and index accordingly.
+
+    The diagonal should match per-subject r from
+    `_evaluate_per_subject_and_group` (sanity check). The off-diagonal
+    measures cross-subject transferability; specificity = mean(diag) - mean(off)
+    quantifies whether the identity pathway produces subject-specific outputs.
+    """
+    gen_np = generated_samples_per_model.cpu().numpy() if isinstance(
+        generated_samples_per_model, torch.Tensor) else np.asarray(generated_samples_per_model)
+    true_np = true_fmri.cpu().numpy() if isinstance(true_fmri, torch.Tensor) else np.asarray(true_fmri)
+    sid_np = subject_ids.cpu().numpy() if isinstance(subject_ids, torch.Tensor) else np.asarray(subject_ids)
+    stim_np = stim_keys.cpu().numpy() if isinstance(stim_keys, torch.Tensor) else np.asarray(stim_keys)
+
+    unique_ids = sorted(np.unique(sid_np).tolist())
+    n_subj = len(unique_ids)
+    subj_names = [
+        ALL_SUBJECTS[i] if 0 <= i < len(ALL_SUBJECTS) else f"subj_id_{i}"
+        for i in unique_ids
+    ]
+
+    # Shared (y_coords, x_coords) for the 2D ROI — identical across all
+    # subjects per CLAUDE.md, so pulling from the first subject is safe.
+    y_coords = x_coords = None
+    if args.data.is_2d:
+        y_coords, x_coords = _load_subject_locations_2d(args, subj_names[0])
+
+    # Build (n_subj, n_stim, n_voxels) aligned tensors for predictions and
+    # true fMRI. We sort each subject's slice by its act_idx so that the
+    # k-th row for every subject corresponds to the same stimulus.
+    reference_stim_keys = None
+    aligned_pred = []
+    aligned_true = []
+    for subj_idx in unique_ids:
+        mask = sid_np == subj_idx
+        stim_s = stim_np[mask]
+        order = np.argsort(stim_s, kind="stable")
+        stim_sorted = stim_s[order]
+
+        if reference_stim_keys is None:
+            reference_stim_keys = stim_sorted
+        else:
+            if not np.array_equal(stim_sorted, reference_stim_keys):
+                # Mismatch means subjects don't share the same stimulus set
+                # (e.g. unaveraged variant with per-subject reps). Bail with
+                # a clear message instead of silently producing a wrong matrix.
+                print(
+                    f"[confusion] subject {subj_idx} ({subj_names[unique_ids.index(subj_idx)]}) "
+                    f"has different stimulus keys; skipping cross-subject confusion matrix.",
+                    flush=True,
+                )
+                return None
+
+        gen_s = gen_np[mask][order]
+        true_s = true_np[mask][order]
+        if args.data.is_2d:
+            if gen_s.ndim == 4:
+                gen_s = gen_s.squeeze(1)
+            if true_s.ndim == 4:
+                true_s = true_s.squeeze(1)
+            gen_vox = gen_s[:, y_coords, x_coords]
+            true_vox = true_s[:, y_coords, x_coords]
+        else:
+            if gen_s.ndim == 3:
+                gen_s = gen_s.squeeze(1)
+            if true_s.ndim == 3:
+                true_s = true_s.squeeze(1)
+            gen_vox = gen_s
+            true_vox = true_s
+
+        aligned_pred.append(gen_vox)
+        aligned_true.append(true_vox)
+
+    aligned_pred = np.stack(aligned_pred, axis=0)  # (n_subj, n_stim, n_vox)
+    aligned_true = np.stack(aligned_true, axis=0)
+    n_stim = aligned_pred.shape[1]
+    n_vox = aligned_pred.shape[2]
+
+    # Fill the confusion matrix.
+    confusion = np.full((n_subj, n_subj), np.nan, dtype=np.float64)
+    for i_idx in range(n_subj):
+        for j_idx in range(n_subj):
+            r_per_voxel = _per_voxel_r(aligned_pred[i_idx], aligned_true[j_idx])
+            confusion[i_idx, j_idx] = float(np.nanmean(r_per_voxel))
+
+    # Print the matrix.
+    header = f"Cross-subject confusion matrix — {model_name}"
+    print(f"\n{'=' * 60}\n{header}\n{'=' * 60}", flush=True)
+    print(
+        f"  rows = identity used for generation, cols = true subject",
+        flush=True,
+    )
+    print(
+        f"  cell = mean per-voxel Pearson r over {n_stim} shared stimuli, "
+        f"{n_vox} voxels",
+        flush=True,
+    )
+    col_header = "             " + "  ".join(f"{n:>8}" for n in subj_names)
+    print(col_header, flush=True)
+    for i_idx, i_name in enumerate(subj_names):
+        row_vals = "  ".join(f"{confusion[i_idx, j_idx]:+8.4f}" for j_idx in range(n_subj))
+        print(f"  {i_name:>10}  {row_vals}", flush=True)
+
+    diag_vals = np.diag(confusion)
+    off_mask = ~np.eye(n_subj, dtype=bool)
+    mean_diag = float(np.nanmean(diag_vals))
+    mean_off = float(np.nanmean(confusion[off_mask]))
+    specificity = mean_diag - mean_off
+    print(f"\n  mean(diagonal)   = {mean_diag:+.4f}", flush=True)
+    print(f"  mean(off-diag)   = {mean_off:+.4f}", flush=True)
+    print(
+        f"  specificity      = {specificity:+.4f}  "
+        f"(larger = identity conditioning produces subject-specific outputs)",
+        flush=True,
+    )
+    print(f"{'=' * 60}\n", flush=True)
+
+    # Log summary scalars + per-cell scalars to wandb under model_step.
+    log_payload = {
+        "confusion/mean_diagonal": mean_diag,
+        "confusion/mean_offdiagonal": mean_off,
+        "confusion/specificity": specificity,
+        "model_step": step_num,
+    }
+    for i_idx, i_name in enumerate(subj_names):
+        for j_idx, j_name in enumerate(subj_names):
+            log_payload[f"confusion/cell/pred_{i_name}_vs_true_{j_name}"] = float(confusion[i_idx, j_idx])
+
+    # Render the matrix as a heatmap figure for wandb (paired with scalars so
+    # the time-series is all under one `confusion/` prefix).
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        from matplotlib import pyplot as plt
+        from matplotlib.colors import TwoSlopeNorm
+
+        finite = confusion[np.isfinite(confusion)]
+        if finite.size > 0:
+            vmax = float(np.nanmax(np.abs(finite)))
+        else:
+            vmax = 1.0
+        vmax = max(vmax, 1e-6)
+        norm = TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax)
+
+        fig, ax = plt.subplots(figsize=(1.1 * n_subj + 2, 1.1 * n_subj + 1.5))
+        im = ax.imshow(confusion, cmap="RdBu_r", norm=norm)
+        ax.set_xticks(range(n_subj))
+        ax.set_yticks(range(n_subj))
+        ax.set_xticklabels(subj_names, rotation=45, ha="right")
+        ax.set_yticklabels(subj_names)
+        ax.set_xlabel("true subject (columns)")
+        ax.set_ylabel("generation identity (rows)")
+        ax.set_title(
+            f"Cross-subject confusion — {model_name}\n"
+            f"diag={mean_diag:+.4f}, off={mean_off:+.4f}, spec={specificity:+.4f}"
+        )
+        for i_idx in range(n_subj):
+            for j_idx in range(n_subj):
+                val = confusion[i_idx, j_idx]
+                if not np.isfinite(val):
+                    continue
+                # White text when the cell colour is saturated, otherwise black.
+                txt_color = "white" if abs(val) > 0.6 * vmax else "black"
+                ax.text(
+                    j_idx, i_idx, f"{val:+.3f}",
+                    ha="center", va="center", color=txt_color, fontsize=8,
+                )
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="mean per-voxel Pearson r")
+        fig.tight_layout()
+        log_payload["confusion/matrix_heatmap"] = wandb.Image(fig)
+        plt.close(fig)
+    except Exception as e:
+        print(f"WARNING: failed to render confusion heatmap: {e}", flush=True)
+
+    wandb.log(log_payload)
+
+    # Persist raw matrix + metadata alongside the other generation outputs.
+    try:
+        output_dir = os.path.join(
+            getattr(args.validation, "output_folder", "./model_outputs/ann-brain/"),
+            str(args.jobid),
+        )
+        os.makedirs(output_dir, exist_ok=True)
+        safe_model_name = re.sub(r"[^0-9A-Za-z_\-]", "_", str(model_name))
+        np.savez(
+            os.path.join(output_dir, f"confusion_matrix_{safe_model_name}.npz"),
+            confusion=confusion,
+            subject_ids=np.array(unique_ids),
+            subject_names=np.array(subj_names),
+            stim_keys=reference_stim_keys,
+            mean_diagonal=mean_diag,
+            mean_offdiagonal=mean_off,
+            specificity=specificity,
+            n_stim=n_stim,
+            n_voxels=n_vox,
+        )
+    except Exception as e:
+        print(f"WARNING: failed to save confusion_matrix npz: {e}", flush=True)
+
+    return confusion
+
+
 _STEP_TAG_RE = re.compile(r"step_(\d+)")
 _MODEL_PREFIXES = ("checkpoint_", "model_checkpoint_", "model_")
 
@@ -564,6 +784,7 @@ def generate_sample_loop(args):
         generated_samples_list = []
         true_fmri_list = []
         subject_ids_list = []
+        stim_keys_list = []  # act_idx per sample; enables cross-subject alignment
 
         # Cross-subject evaluation: load multi-subject test data for per-subject
         # metrics, but don't pass identity_label to the model (it wasn't trained
@@ -573,9 +794,11 @@ def generate_sample_loop(args):
             print("Cross-subject evaluation mode: identity_label will NOT be passed to the model", flush=True)
 
         for idx, batch in enumerate(gen_dataloader):
-            # Dataset returns 2-tuple (fmri, ann) or 3-tuple (fmri, ann, subject_id)
+            # Dataset returns 2-tuple (fmri, ann) for single-subject, or
+            # 4-tuple (fmri, ann, subject_id, act_idx) for multi-subject.
             true_fmri, cond = batch[0], batch[1]
             subject_id = batch[2] if len(batch) > 2 else None
+            stim_key = batch[3] if len(batch) > 3 else None
             # Pass identity to model only if trained with it (not cross-subject eval)
             identity_label = None if cross_subject_eval else (subject_id.to(DEVICE) if subject_id is not None else None)
             cond = cond.to(DEVICE)
@@ -619,11 +842,14 @@ def generate_sample_loop(args):
             true_fmri_list.append(true_fmri.cpu())
             if subject_id is not None:
                 subject_ids_list.append(subject_id.cpu())
+            if stim_key is not None:
+                stim_keys_list.append(stim_key.cpu())
 
         # Concatenate all batches
         generated_samples_one_model = torch.cat(generated_samples_list, dim=0)
         true_fmri_concat = torch.cat(true_fmri_list, dim=0)
         subject_ids_concat = torch.cat(subject_ids_list, dim=0) if subject_ids_list else None
+        stim_keys_concat = torch.cat(stim_keys_list, dim=0) if stim_keys_list else None
 
         print("Shape of generated samples after concatenating batches: ", generated_samples_one_model.shape, flush=True)
         print("Shape of true fMRI after concatenating batches: ", true_fmri_concat.shape, flush=True)
@@ -632,7 +858,7 @@ def generate_sample_loop(args):
         match = re.search(r"(step_\d+|final|best)", filename)
         tag = match.group(1) if match else filename
         generated_samples[f"{tag}"] = generated_samples_one_model
-        true_fmri_per_model[f"{tag}"] = (true_fmri_concat, subject_ids_concat)
+        true_fmri_per_model[f"{tag}"] = (true_fmri_concat, subject_ids_concat, stim_keys_concat)
         model_step_per_model[f"{tag}"] = step_from_checkpoint
 
     return generated_samples, true_fmri_per_model, model_step_per_model
@@ -664,7 +890,7 @@ def main():
                 checkpoint_step=model_step_per_model.get(model_name),
             )
             print(f"  → wandb model_step = {step_num} (from {'checkpoint' if model_step_per_model.get(model_name) is not None else 'filename/fallback'})", flush=True)
-            true_fmri, subject_ids = true_fmri_per_model[model_name]
+            true_fmri, subject_ids, stim_keys = true_fmri_per_model[model_name]
             visualise_and_save_results(
                 generated_samples_per_model,
                 true_fmri=true_fmri,
@@ -686,6 +912,23 @@ def main():
                     step_num,
                     model_name,
                 )
+
+            # Cross-subject confusion matrix: (i, j) = mean per-voxel Pearson r
+            # between predictions generated with identity=i and subject j's
+            # true fMRI. Requires stim_keys to align subjects by stimulus.
+            # Gated by validation.cross_subject_confusion (default true when
+            # stim_keys are present).
+            run_confusion = bool(getattr(args.validation, "cross_subject_confusion", True))
+            if run_confusion and subject_ids is not None and stim_keys is not None:
+                _evaluate_cross_subject_confusion(
+                    generated_samples_per_model,
+                    true_fmri,
+                    subject_ids,
+                    stim_keys,
+                    args,
+                    step_num,
+                    model_name,
+                )
             
             if not args.data.is_2d:
                 # I want to see non-interpolated on pycortex flatmap images!
@@ -696,6 +939,36 @@ def main():
                     "true_fmri_data": fmri_to_wandb_image(one_fmri_signal_2d, title="True fMRI"),
                     "generated_data": fmri_to_wandb_image(one_generated_sample_2d, title="Generated"),
                 })
+
+            # Save raw generated samples + true fMRI for downstream analysis
+            try:
+                output_dir = os.path.join(
+                    getattr(args.validation, "output_folder", "./model_outputs/ann-brain/"),
+                    str(args.jobid),
+                )
+                os.makedirs(output_dir, exist_ok=True)
+                safe_model_name = re.sub(r"[^0-9A-Za-z_\-]", "_", str(model_name))
+                save_dict = {
+                    "generated": generated_samples_per_model.cpu().numpy()
+                        if isinstance(generated_samples_per_model, torch.Tensor)
+                        else np.asarray(generated_samples_per_model),
+                    "true_fmri": true_fmri.cpu().numpy()
+                        if isinstance(true_fmri, torch.Tensor)
+                        else np.asarray(true_fmri),
+                }
+                if subject_ids is not None:
+                    save_dict["subject_ids"] = subject_ids.cpu().numpy() if isinstance(subject_ids, torch.Tensor) else np.asarray(subject_ids)
+                if stim_keys is not None:
+                    save_dict["stim_keys"] = stim_keys.cpu().numpy() if isinstance(stim_keys, torch.Tensor) else np.asarray(stim_keys)
+                if step_num is not None:
+                    save_dict["model_step"] = np.array(step_num)
+                np.savez(
+                    os.path.join(output_dir, f"generated_samples_{safe_model_name}.npz"),
+                    **save_dict,
+                )
+                print(f"Saved generated samples to {output_dir}/generated_samples_{safe_model_name}.npz", flush=True)
+            except Exception as e:
+                print(f"WARNING: failed to save generated samples: {e}", flush=True)
 
             # no f-string in the name as i want to have all the models in the slide bar in wandb
             #pyplot_brain(generated_samples_per_model.mean(axis=0), args=args, savename=f"generated_samples_mean", figpath=f"{args.validation.output_folder}/{args.jobid}", save_type='png', step_num=step_num)

@@ -3,17 +3,23 @@
 For the 515 images shared across all 8 NSD subjects, computes how well
 one subject's brain response can be predicted from other subjects' responses.
 
-Reports both lower and upper bounds:
+Reports both lower and upper bounds at two levels:
 
-  Lower bound (leave-one-out):
-    For each subject, correlate their response with the mean of the *other*
-    subjects' responses across images.  Average over subjects.
+  **Single-subject (raw):**
+    Lower bound (leave-one-out):
+      For each subject, correlate their response with the mean of the *other*
+      subjects' responses across images.  Average over subjects.
+    Upper bound (include-self):
+      For each subject, correlate their response with the mean of *all*
+      subjects' responses (including themselves).  Average over subjects.
 
-  Upper bound (include-self):
-    For each subject, correlate their response with the mean of *all*
-    subjects' responses (including themselves).  Average over subjects.
+  **Averaged (group of ``group_size`` subjects):**
+    For every C(N, group_size) combination of subjects, average their
+    responses per image, then compute the same lower/upper bounds
+    against the remaining subjects.  This is the empirical analogue of
+    Spearman-Brown correction — computed directly instead of projected.
 
-Both bounds are reported for:
+Both levels are reported for:
   - Averaged data   (using trial-averaged betas per subject)
   - Unaveraged data (using per-trial betas, averaged within-subject first
                       to isolate inter-subject variance)
@@ -138,14 +144,22 @@ def compute_intersubject_nc(subject_betas):
     # Stack all subjects: (n_subj, n_images, n_voxels)
     stack = np.array([subject_betas[s] for s in subj_names])
 
-    # ── Pairwise correlations (for reference) ──
+    # ── Pairwise correlations (full matrix + mean summary) ──
+    # confusion_matrix[i, j] = mean over voxels of corr(subj_i, subj_j)
+    confusion_matrix = np.zeros((n_subj, n_subj), dtype=np.float64)
     pair_r_sums = np.zeros(n_voxels, dtype=np.float64)
     pair_count = 0
     for i, j in combinations(range(n_subj), 2):
         r_pair = _pearsonr_columns(stack[i], stack[j])
+        mean_r = float(r_pair.mean())
+        confusion_matrix[i, j] = mean_r
+        confusion_matrix[j, i] = mean_r
         pair_r_sums += r_pair
         pair_count += 1
-        print(f"  Pair ({subj_names[i]}, {subj_names[j]}): mean r = {r_pair.mean():.4f}")
+        print(f"  Pair ({subj_names[i]}, {subj_names[j]}): mean r = {mean_r:.4f}")
+
+    # Diagonal: within-subject (self-correlation = 1.0 by definition)
+    np.fill_diagonal(confusion_matrix, 1.0)
 
     r_pairwise = pair_r_sums / pair_count
 
@@ -180,6 +194,7 @@ def compute_intersubject_nc(subject_betas):
         "r_lower_clamped": r_lower_c,
         "r_upper": r_upper,
         "r_upper_clamped": r_upper_c,
+        "confusion_matrix": confusion_matrix,
         "mean_r_pairwise": float(r_pairwise_c.mean()),
         "mean_r_lower": float(r_lower_c.mean()),
         "mean_r_upper": float(r_upper_c.mean()),
@@ -195,14 +210,18 @@ def visualise_nc(args, nc_per_voxel, title, wandb_key):
     nc_2d, _ = signal_to_2d(args, one_signal_to_transform=nc_per_voxel)
     nc_2d_img = np.squeeze(nc_2d)
 
+    # Use a sequential colormap (0 to max) since NC is non-negative
+    from matplotlib.colors import TwoSlopeNorm
+    img = nc_2d_img.copy()
+    abs_max = max(abs(img.min()), abs(img.max()), 1e-8)
     fig, ax = plt.subplots()
-    vmax = max(nc_2d_img.max(), 0.01)
-    im = ax.imshow(nc_2d_img, cmap="hot", origin="lower", vmin=0, vmax=vmax)
-    ax.set_title(title)
+    im = ax.imshow(img, cmap='RdBu_r', origin="lower",
+              norm=TwoSlopeNorm(vmin=-abs_max, vcenter=0, vmax=abs_max))
     plt.colorbar(im, ax=ax)
     payload[f"{wandb_key}_2d"] = wandb.Image(fig)
     plt.close(fig)
-
+    
+    vmax = max(nc_2d_img.max(), 0.01)
     fig_brain = pyplot_brain(nc_per_voxel, args=args,
                              savename=wandb_key, figpath="/tmp",
                              max_cmap_val=vmax)
@@ -210,6 +229,34 @@ def visualise_nc(args, nc_per_voxel, title, wandb_key):
     plt.close(fig_brain)
 
     return payload
+
+
+def plot_pairwise_confusion_matrix(confusion_matrix, subj_names, title):
+    """Plot pairwise inter-subject correlation as a confusion matrix heatmap."""
+    n = len(subj_names)
+    fig, ax = plt.subplots(figsize=(8, 7))
+    im = ax.imshow(confusion_matrix, cmap="RdBu_r", vmin=0, vmax=1)
+    plt.colorbar(im, ax=ax, label="Mean Pearson r")
+
+    # Tick labels
+    short_names = [s.replace("subj0", "S") for s in subj_names]
+    ax.set_xticks(range(n))
+    ax.set_yticks(range(n))
+    ax.set_xticklabels(short_names, fontsize=10)
+    ax.set_yticklabels(short_names, fontsize=10)
+    ax.set_xlabel("Subject")
+    ax.set_ylabel("Subject")
+
+    # Annotate cells with values
+    for i in range(n):
+        for j in range(n):
+            color = "white" if confusion_matrix[i, j] > 0.6 else "black"
+            ax.text(j, i, f"{confusion_matrix[i, j]:.3f}",
+                    ha="center", va="center", fontsize=8, color=color)
+
+    ax.set_title(title)
+    fig.tight_layout()
+    return fig
 
 
 def main():
@@ -325,6 +372,15 @@ def main():
             wandb_key=f"{label}/r_pairwise",
         ))
 
+        # Pairwise confusion matrix
+        fig_cm = plot_pairwise_confusion_matrix(
+            results["confusion_matrix"],
+            results["subjects"],
+            title=f"Inter-subject pairwise r ({label})",
+        )
+        wandb_payload[f"{label}/pairwise_confusion_matrix"] = wandb.Image(fig_cm)
+        plt.close(fig_cm)
+
     wandb.log(wandb_payload)
 
     # ── Save ──
@@ -344,10 +400,12 @@ def main():
         avg_r_pairwise=avg_results["r_pairwise_clamped"],
         avg_r_lower=avg_results["r_lower_clamped"],
         avg_r_upper=avg_results["r_upper_clamped"],
+        avg_confusion_matrix=avg_results["confusion_matrix"],
         # Unaveraged (within-subject averaged)
         unavg_r_pairwise=unavg_results["r_pairwise_clamped"],
         unavg_r_lower=unavg_results["r_lower_clamped"],
         unavg_r_upper=unavg_results["r_upper_clamped"],
+        unavg_confusion_matrix=unavg_results["confusion_matrix"],
         # Metadata
         roi_indices=roi_indices,
         subjects=np.array(subjects),

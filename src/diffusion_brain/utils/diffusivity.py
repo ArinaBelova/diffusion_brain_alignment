@@ -485,6 +485,13 @@ def generate_samples(num_samples: int,
     else:
         raise ValueError(f"Model {args.model.name} not recognized for sample generation.")    
 
+    # Prefer the conditioning tensor's batch size over the caller-provided
+    # num_samples: the final partial batch of a DataLoader (drop_last=False)
+    # yields cond.shape[0] < args.validation.batch_size, and num_samples must
+    # match so that x, cond, and identity_label stay aligned inside the UNet.
+    if cond is not None and cond.shape[0] != num_samples:
+        num_samples = cond.shape[0]
+
     print("In generation generating with model {} and diffusion process {}, noise shape will be {}".format(args.model.name, diffusion_process, (num_samples, *dim_x)), flush=True)
     noise = torch.randn(size=(num_samples, *dim_x), device=device)
     mu, std = diffusion_process.brown_moments(torch.zeros(num_samples, *dim_x).to(device), diffusion_process.T)

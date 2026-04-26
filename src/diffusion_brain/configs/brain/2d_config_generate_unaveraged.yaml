@@ -41,15 +41,16 @@ model:
   cond_seq_len: 8
   token_dim: 256
   cond_token_mode: "learned"
-  num_classes: 8 # for subject identity
+  num_classes: 8 #8 # for subject identity
   # UNet block configuration — 4 levels with cross-attention at 3 spatial scales
   block_out_channels: [64, 128, 256, 512]
   down_block_types: ["DownBlock2D", "DownBlock2D", "DownBlock2D", "DownBlock2D"] # ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"]
   up_block_types: ["UpBlock2D", "UpBlock2D", "UpBlock2D", "UpBlock2D"] # ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"]
+  resnet_time_scale_shift: "default" # "default" uses the original time embedding; "scale_shift" applies a learned scale and shift to the time embedding in each ResNet block, which was found to improve training stability in early experiments
   ###########################
   input_folder: './model_outputs/ann-brain/ann-brain-cluster' #-197972/'
   run_id: 197972
-  which: best  # best final all
+  which: best #55000 #best  # best final all
   ############# autoencoder settings for future use #############
   use_autoencoder: false
   ae_save_path: './model_outputs/ann-brain/autoencoder/'

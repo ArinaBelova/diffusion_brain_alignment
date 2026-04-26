@@ -29,7 +29,7 @@ data:
   roi: 5
   roi_defs_dir: './src/diffusion_brain/data/roi_defs/'
   roi_file: "streams"
-  fmri_norm_mode: "global_std" # "active_std" "max_abs" # must match training config (2d_config_train_multisubject.yaml)
+  fmri_norm_mode: "active_std" # "global_std" "active_std" "max_abs" # must match training config (2d_config_train_multisubject.yaml)
 
 model:
   name: unet-diffusers
@@ -44,10 +44,11 @@ model:
   block_out_channels: [64, 128, 256, 512]
   down_block_types: ["DownBlock2D", "DownBlock2D", "DownBlock2D", "DownBlock2D"]
   up_block_types: ["UpBlock2D", "UpBlock2D", "UpBlock2D", "UpBlock2D"]
+  resnet_time_scale_shift: "default" # "default" uses the original time embedding; "scale_shift" applies a learned scale and shift to the time embedding in each ResNet block, which was found to improve training stability in early experiments
   remove_deep_conv: false
   input_folder: './model_outputs/ann-brain/ann-brain-cluster'
-  run_id: 242285 # override at submit time
-  which: "best" # best / final / step_XXXXX / all / [list of tags]
+  run_id: 266391 #242285 # override at submit time
+  which: "all" # best / final / step_XXXXX / all / [list of tags]
   use_autoencoder: false
   ae_save_path: './model_outputs/ann-brain/autoencoder/'
   ae_name: 'ae_linear'

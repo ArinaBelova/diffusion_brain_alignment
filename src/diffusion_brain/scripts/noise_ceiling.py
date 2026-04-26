@@ -3,18 +3,21 @@
 Reports both lower and upper bounds of the noise ceiling:
 
   Lower bound (leave-one-out):
-    For each trial, correlate it with the mean of the *other* trials across
-    images.  This is the performance a perfect model would achieve when
-    evaluated against held-out data.
+    Prediction target excludes the trial being evaluated.
 
   Upper bound (include-self):
-    For each trial, correlate it with the mean of *all* trials (including
-    itself) across images.  Slightly optimistic because the evaluation
-    target shares noise with the prediction.
+    Prediction target includes the trial being evaluated.  Slightly
+    optimistic because the evaluation target shares noise with the
+    prediction.
 
-Both bounds are reported for:
-  - Unaveraged data  (single-trial prediction)
-  - Averaged data    (k-trial averaged prediction, Spearman-Brown corrected)
+Each bound is computed in two variants:
+
+  Unaveraged:  correlate individual trials pairwise (lower) or a single
+    trial vs the mean of all trials (upper).
+
+  Averaged:  correlate each trial with the mean of the *other* trials
+    (lower) or the mean of all trials (upper).  Computed empirically,
+    not via Spearman-Brown correction.
 
 Works on both 1D voxel vectors and 2D flatmap projections.
 Reports per-voxel noise ceiling averaged over active voxels.
@@ -71,6 +74,15 @@ def _pearsonr_columns(a, b):
 def compute_noise_ceiling_1d(betas_roi, nsd_ids):
     """Compute per-voxel noise ceiling (lower & upper bounds).
 
+    Two variants for each bound:
+
+      Unaveraged: correlate individual trials pairwise (lower: leave-one-out
+        pairs; upper: trial vs mean-of-all-trials).
+
+      Averaged: correlate each trial with the mean of the *other* trials
+        for that image (lower), or with the mean of *all* trials including
+        itself (upper).  Computed empirically, not via Spearman-Brown.
+
     Parameters
     ----------
     betas_roi : ndarray, shape (n_trials, n_voxels)
@@ -100,14 +112,9 @@ def compute_noise_ceiling_1d(betas_roi, nsd_ids):
     if n_images == 0:
         raise ValueError("No images with ≥2 repetitions found")
 
-    # ── Build per-image trial matrices ──
-    # For simplicity, work with images that have exactly the modal rep count.
-    # Most NSD images have 3 reps; handle variable counts gracefully.
     max_reps = max(len(idxs) for idxs in usable.values())
 
-    # ── Lower bound: pairwise correlations (leave-one-out) ──
-    # Average r across all distinct trial pairs.  This estimates r_single,
-    # from which we derive NC_lower via Spearman-Brown.
+    # ── Unaveraged lower bound: pairwise trial correlations ──
     pair_r_sums = np.zeros(n_voxels, dtype=np.float64)
     pair_count = 0
 
@@ -117,81 +124,79 @@ def compute_noise_ceiling_1d(betas_roi, nsd_ids):
             continue
         resp_i = np.array([betas_roi[usable[nid][i]] for nid in img_ids])
         resp_j = np.array([betas_roi[usable[nid][j]] for nid in img_ids])
-        # r_pair = _pearsonr_columns(resp_i, resp_j)
-        r_pair = np.array([scipy.stats.pearsonr(resp_i[:, v], resp_j[:, v])[0] for v in range(n_voxels)])
+        r_pair = _pearsonr_columns(resp_i, resp_j)
         pair_r_sums += r_pair
         pair_count += 1
-        print(f"  Lower-bound pair ({i},{j}): {len(img_ids)} images, mean r = {r_pair.mean():.4f}")
+        print(f"  Unaveraged-lower pair ({i},{j}): {len(img_ids)} images, mean r = {r_pair.mean():.4f}")
 
     if pair_count == 0:
         raise ValueError("No valid repetition pairs found")
 
-    r_single = pair_r_sums / pair_count
-    r_single_clamped = np.clip(r_single, 0, 1)
+    nc_lower_unavg = pair_r_sums / pair_count
+    nc_lower_unavg_clamped = np.clip(nc_lower_unavg, 0, 1)
 
-    # ── Upper bound: correlate each trial with mean of ALL trials ──
-    # r_upper_i = corr(trial_i, mean_all) across images.  Average over trials.
-    upper_r_sums = np.zeros(n_voxels, dtype=np.float64)
-    upper_count = 0
+    # ── Unaveraged upper bound: trial vs mean of ALL trials (include-self) ──
+    upper_unavg_r_sums = np.zeros(n_voxels, dtype=np.float64)
+    upper_unavg_count = 0
 
     for trial_idx in range(max_reps):
         img_ids = [nid for nid, idxs in usable.items() if len(idxs) > trial_idx]
         if len(img_ids) < 10:
             continue
-
-        # Single trial responses: (n_images, n_voxels)
         single = np.array([betas_roi[usable[nid][trial_idx]] for nid in img_ids])
-
-        # Mean of ALL trials for each image (including this trial)
         mean_all = np.array([
             np.mean([betas_roi[idx] for idx in usable[nid]], axis=0)
             for nid in img_ids
         ])
-
         r_upper = _pearsonr_columns(single, mean_all)
-        upper_r_sums += r_upper
-        upper_count += 1
-        print(f"  Upper-bound trial {trial_idx}: {len(img_ids)} images, mean r = {r_upper.mean():.4f}")
+        upper_unavg_r_sums += r_upper
+        upper_unavg_count += 1
+        print(f"  Unaveraged-upper trial {trial_idx}: {len(img_ids)} images, mean r = {r_upper.mean():.4f}")
 
-    r_upper_avg = upper_r_sums / upper_count
-    r_upper_clamped = np.clip(r_upper_avg, 0, 1)
+    nc_upper_unavg = upper_unavg_r_sums / upper_unavg_count
+    nc_upper_unavg_clamped = np.clip(nc_upper_unavg, 0, 1)
 
-    # ── Derive noise ceilings ──
-    # Lower bound: Spearman-Brown on pairwise r_single
-    nc_lower_unavg = r_single_clamped  # NC for predicting a single trial
-    nc_lower_avg = {}
-    for k in [2, 3]:
-        nc_lower_avg[k] = (k * r_single_clamped) / (1 + (k - 1) * r_single_clamped)
+    # ── Averaged lower bound: trial vs mean of OTHER trials (leave-one-out) ──
+    lower_avg_r_sums = np.zeros(n_voxels, dtype=np.float64)
+    lower_avg_count = 0
 
-    # Upper bound: direct correlation with all-trial mean
-    # For averaged prediction, this IS the upper bound directly (the target
-    # is the k-trial mean, and we correlated against exactly that).
-    # For single-trial prediction, the upper bound uses pairwise r but
-    # the include-self version inflates it, so we report r_upper as-is.
-    nc_upper_unavg = r_upper_clamped
-    nc_upper_avg = {}
-    for k in [2, 3]:
-        nc_upper_avg[k] = (k * r_upper_clamped) / (1 + (k - 1) * r_upper_clamped)
+    for trial_idx in range(max_reps):
+        img_ids = [nid for nid, idxs in usable.items() if len(idxs) > trial_idx]
+        if len(img_ids) < 10:
+            continue
+        single = np.array([betas_roi[usable[nid][trial_idx]] for nid in img_ids])
+        mean_others = np.array([
+            np.mean([betas_roi[idx] for idx in usable[nid] if idx != usable[nid][trial_idx]], axis=0)
+            for nid in img_ids
+        ])
+        r_lower = _pearsonr_columns(single, mean_others)
+        lower_avg_r_sums += r_lower
+        lower_avg_count += 1
+        print(f"  Averaged-lower trial {trial_idx}: {len(img_ids)} images, mean r = {r_lower.mean():.4f}")
+
+    nc_lower_avg = lower_avg_r_sums / lower_avg_count
+    nc_lower_avg_clamped = np.clip(nc_lower_avg, 0, 1)
+
+    # ── Averaged upper bound: trial vs mean of ALL trials (include-self) ──
+    # Same as unaveraged upper — correlating with the averaged signal
+    nc_upper_avg = nc_upper_unavg.copy()
+    nc_upper_avg_clamped = nc_upper_unavg_clamped.copy()
 
     return {
         # Lower bound (leave-one-out)
-        "r_single": r_single,
-        "r_single_clamped": r_single_clamped,
         "nc_lower_unavg": nc_lower_unavg,
+        "nc_lower_unavg_clamped": nc_lower_unavg_clamped,
         "nc_lower_avg": nc_lower_avg,
-        "mean_r_single": float(r_single.mean()),
-        "mean_r_single_clamped": float(r_single_clamped.mean()),
-        "mean_nc_lower_unavg": float(nc_lower_unavg.mean()),
-        "mean_nc_lower_avg": {k: float(v.mean()) for k, v in nc_lower_avg.items()},
+        "nc_lower_avg_clamped": nc_lower_avg_clamped,
+        "mean_nc_lower_unavg": float(nc_lower_unavg_clamped.mean()),
+        "mean_nc_lower_avg": float(nc_lower_avg_clamped.mean()),
         # Upper bound (include-self)
-        "r_upper": r_upper_avg,
-        "r_upper_clamped": r_upper_clamped,
         "nc_upper_unavg": nc_upper_unavg,
+        "nc_upper_unavg_clamped": nc_upper_unavg_clamped,
         "nc_upper_avg": nc_upper_avg,
-        "mean_r_upper": float(r_upper_avg.mean()),
-        "mean_r_upper_clamped": float(r_upper_clamped.mean()),
-        "mean_nc_upper_unavg": float(nc_upper_unavg.mean()),
-        "mean_nc_upper_avg": {k: float(v.mean()) for k, v in nc_upper_avg.items()},
+        "nc_upper_avg_clamped": nc_upper_avg_clamped,
+        "mean_nc_upper_unavg": float(nc_upper_unavg_clamped.mean()),
+        "mean_nc_upper_avg": float(nc_upper_avg_clamped.mean()),
         # Metadata
         "n_images_used": n_images,
         "rep_counts": rep_counts,
@@ -329,60 +334,51 @@ def main():
         results = compute_noise_ceiling_1d(split_betas, split_nsd_ids)
 
         print(f"\n  === LOWER BOUND (leave-one-out) ===")
-        print(f"  Single-trial reliability: {results['mean_r_single_clamped']:.4f}")
-        print(f"  NC unaveraged:            {results['mean_nc_lower_unavg']:.4f}")
-        for k, nc in sorted(results["mean_nc_lower_avg"].items()):
-            print(f"  NC averaged k={k}:         {nc:.4f}")
+        print(f"  Unaveraged (pairwise):    {results['mean_nc_lower_unavg']:.4f}")
+        print(f"  Averaged (vs mean others):{results['mean_nc_lower_avg']:.4f}")
 
         print(f"\n  === UPPER BOUND (include-self) ===")
-        print(f"  Single-trial reliability: {results['mean_r_upper_clamped']:.4f}")
-        print(f"  NC unaveraged:            {results['mean_nc_upper_unavg']:.4f}")
-        for k, nc in sorted(results["mean_nc_upper_avg"].items()):
-            print(f"  NC averaged k={k}:         {nc:.4f}")
+        print(f"  Unaveraged (vs mean all): {results['mean_nc_upper_unavg']:.4f}")
+        print(f"  Averaged (vs mean all):   {results['mean_nc_upper_avg']:.4f}")
 
         # ── Log brain maps to wandb ──
         wandb_payload = {}
 
         # Scalar summaries
-        wandb_payload[f"{split_name}/lower_r_single"] = results["mean_r_single_clamped"]
         wandb_payload[f"{split_name}/lower_nc_unaveraged"] = results["mean_nc_lower_unavg"]
-        for k, nc in results["mean_nc_lower_avg"].items():
-            wandb_payload[f"{split_name}/lower_nc_averaged_k{k}"] = nc
-
-        wandb_payload[f"{split_name}/upper_r_single"] = results["mean_r_upper_clamped"]
+        wandb_payload[f"{split_name}/lower_nc_averaged"] = results["mean_nc_lower_avg"]
         wandb_payload[f"{split_name}/upper_nc_unaveraged"] = results["mean_nc_upper_unavg"]
-        for k, nc in results["mean_nc_upper_avg"].items():
-            wandb_payload[f"{split_name}/upper_nc_averaged_k{k}"] = nc
+        wandb_payload[f"{split_name}/upper_nc_averaged"] = results["mean_nc_upper_avg"]
 
         # Brain maps — lower bound
         wandb_payload.update(
             visualise_noise_ceiling(
-                args, results["nc_lower_unavg"], roi_indices,
+                args, results["nc_lower_unavg_clamped"], roi_indices,
                 title=f"NC lower unaveraged ({split_name})",
                 wandb_key=f"{split_name}/lower_nc_unaveraged",
             )
         )
         wandb_payload.update(
             visualise_noise_ceiling(
-                args, results["nc_lower_avg"][3], roi_indices,
-                title=f"NC lower averaged k=3 ({split_name})",
-                wandb_key=f"{split_name}/lower_nc_averaged_k3",
+                args, results["nc_lower_avg_clamped"], roi_indices,
+                title=f"NC lower averaged ({split_name})",
+                wandb_key=f"{split_name}/lower_nc_averaged",
             )
         )
 
         # Brain maps — upper bound
         wandb_payload.update(
             visualise_noise_ceiling(
-                args, results["nc_upper_unavg"], roi_indices,
+                args, results["nc_upper_unavg_clamped"], roi_indices,
                 title=f"NC upper unaveraged ({split_name})",
                 wandb_key=f"{split_name}/upper_nc_unaveraged",
             )
         )
         wandb_payload.update(
             visualise_noise_ceiling(
-                args, results["nc_upper_avg"][3], roi_indices,
-                title=f"NC upper averaged k=3 ({split_name})",
-                wandb_key=f"{split_name}/upper_nc_averaged_k3",
+                args, results["nc_upper_avg_clamped"], roi_indices,
+                title=f"NC upper averaged ({split_name})",
+                wandb_key=f"{split_name}/upper_nc_averaged",
             )
         )
 
@@ -404,15 +400,15 @@ def main():
     np.savez(
         out_path,
         # Lower bound
-        r_single=all_results["r_single"],
-        r_single_clamped=all_results["r_single_clamped"],
         nc_lower_unavg=all_results["nc_lower_unavg"],
-        **{f"nc_lower_avg_k{k}": v for k, v in all_results["nc_lower_avg"].items()},
+        nc_lower_unavg_clamped=all_results["nc_lower_unavg_clamped"],
+        nc_lower_avg=all_results["nc_lower_avg"],
+        nc_lower_avg_clamped=all_results["nc_lower_avg_clamped"],
         # Upper bound
-        r_upper=all_results["r_upper"],
-        r_upper_clamped=all_results["r_upper_clamped"],
         nc_upper_unavg=all_results["nc_upper_unavg"],
-        **{f"nc_upper_avg_k{k}": v for k, v in all_results["nc_upper_avg"].items()},
+        nc_upper_unavg_clamped=all_results["nc_upper_unavg_clamped"],
+        nc_upper_avg=all_results["nc_upper_avg"],
+        nc_upper_avg_clamped=all_results["nc_upper_avg_clamped"],
         # Metadata
         roi_indices=roi_indices,
         subj=subj,

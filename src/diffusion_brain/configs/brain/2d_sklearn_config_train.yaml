@@ -98,6 +98,6 @@ validation:
   batch_size: 64 #256 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
   n_steps: 100 # SDE steps
   guidance_scale: 10.0 #0.8
-  output_folder: '/outputs/ann-brain/'
+  output_folder: './outputs/ann-brain/'
   num_workers: 1
   label_to_generate: 1 # it needs to be removed later when refactoring diffusivity.py as in ann-brain case we have continuous conditioning vector and not class labels;

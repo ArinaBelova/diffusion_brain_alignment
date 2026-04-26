@@ -29,7 +29,7 @@ data:
   roi: 18 #5
   roi_defs_dir: './src/diffusion_brain/data/roi_defs/'
   roi_file: "HCP_MMP1" #"streams"
-  fmri_norm_mode: "global_std"
+  fmri_norm_mode: "active_std"
 
 model:
   name: unet-diffusers
@@ -37,6 +37,7 @@ model:
   c_out: 1
   condition_mode: "additive"
   dropout_prob: 0.1
+  identity_dropout_prob: 0.1  # higher dropout for discrete identity (8 classes, easily memorised); cf. DALL-E 2 uses 50% for text vs 10% for CLIP embeddings
   lambda_cond_sep: 0.0
   cond_seq_len: 8
   token_dim: 256
@@ -45,9 +46,12 @@ model:
   block_out_channels: [64, 128, 256, 512]
   down_block_types: ["DownBlock2D", "DownBlock2D", "DownBlock2D", "DownBlock2D"]
   up_block_types: ["UpBlock2D", "UpBlock2D", "UpBlock2D", "UpBlock2D"]
+  resnet_time_scale_shift: "default" #"scale_shift" # "default" uses the original time embedding; "scale_shift" applies a learned scale and shift to the time embedding in each ResNet block, which was found to improve training stability in early experiments
+  ##################### dit ###############################
   num_heads: 12
   depth: 12
   hidden_size: 768
+  #######################################################
   save_freq: 50000
   output_folder: './model_outputs/ann-brain/'
   use_autoencoder: false
@@ -66,7 +70,7 @@ optim:
   max_lr: 1.e-4
 
 train:
-  resume_from: ~
+  resume_from: "./model_outputs/ann-brain/ann-brain-cluster-266391/checkpoint_best.pth" #~
   steps: 1000000
   batch_size: 16
   dataset_size: 75880  # ~9485 * 8 subjects

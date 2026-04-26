@@ -203,7 +203,8 @@ def one_step_score_estimation(x, t, noise, label, score_fn, loss_function, diffu
         # Independent CFG dropout for subject identity (null token = num_identities)
         if identity_label is not None:
             num_identities = getattr(args.model, "num_classes", 8)
-            id_mask = torch.bernoulli(torch.full((len(identity_label),), float(args.model.dropout_prob))).to(identity_label.device)
+            id_drop_prob = float(getattr(args.model, "identity_dropout_prob", args.model.dropout_prob))
+            id_mask = torch.bernoulli(torch.full((len(identity_label),), id_drop_prob)).to(identity_label.device)
             masked_identity = identity_label.clone()
             masked_identity[id_mask.bool()] = num_identities  # null token
         else:
@@ -389,7 +390,10 @@ def train_step(step, model, optimizer, lr_scheduler, train_dataloader, loss_func
     
     for accum_step in range(accumulation_steps):
         batch = next(train_dataloader)
-        # Dataset returns 2-tuple (fmri, ann) or 3-tuple (fmri, ann, subject_id)
+        # Dataset returns 2-tuple (fmri, ann) for single-subject, or
+        # 4-tuple (fmri, ann, subject_id, act_idx) for multi-subject.
+        # Training only needs the first three; act_idx (batch[3]) is used
+        # downstream in generate.py for cross-subject confusion matrices.
         data, label = batch[0], batch[1]
         identity_label = batch[2].to(DEVICE) if len(batch) > 2 else None
         data = data.float().to(DEVICE)
@@ -790,20 +794,28 @@ def train(args):
                     print("Generated samples shape:", generated_samples.shape, flush=True)
                     visualise_and_save_results(generated_samples, step, args)
 
-            # Save best model BEFORE restoring non-EMA weights, so the
-            # checkpoint contains the EMA weights that produced the r-score.
             if current_val_r_score is not None and current_val_r_score > best_val_r_score:
                 best_val_r_score = current_val_r_score
+                is_new_best = True
+            else:
+                is_new_best = False
+
+            # Restore original (non-EMA) weights for continued training
+            # BEFORE saving, so model_state_dict always contains training
+            # weights. EMA weights are preserved in ema_state_dict and
+            # generate.py loads them from there. Saving EMA weights as
+            # model_state_dict caused optimizer state mismatch on resume
+            # (Adam momentum/variance tracked the training weights, not EMA).
+            if ema is not None:
+                ema.restore(all_params)
+
+            if is_new_best:
                 directory_to_save = f"{args.model.output_folder}/{args.jobid}"
                 save_checkpoint(directory_to_save, model, optimizer, lr_scheduler, step, best_val_r_score,
                                 ann_tokenizer=ann_tokenizer, ema=ema, suffix="best",
                                 fmri_min=getattr(args.data, "fmri_min", None), fmri_max=getattr(args.data, "fmri_max", None))
                 print(f"New best model saved at step {step} with r-score: {best_val_r_score:.4f}", flush=True)
                 log_wandb({"validation/best_r_score": best_val_r_score, "validation/best_step": step}, step=step)
-
-            # Restore original (non-EMA) weights for continued training
-            if ema is not None:
-                ema.restore(all_params)
 
         # Periodic checkpoint saving (in addition to best model saving)
         if step % args.model.save_freq == 0 and step > 0:

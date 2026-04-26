@@ -132,6 +132,8 @@ class PairedBrainAnnDataset(Dataset):
                 self.fmri_scale = max(abs(raw_min), abs(raw_max))
             elif fmri_norm_mode == "global_std":
                 self.fmri_scale = float(self._chunked_std(active_only=False))
+            elif fmri_norm_mode == "none":
+                self.fmri_scale = 1.0    
             else:  # "active_std" (default)
                 self.fmri_scale = float(self._chunked_std(active_only=True))
         print(f"fMRI normalisation mode: {fmri_norm_mode}, scale: {self.fmri_scale:.4f}", flush=True)
@@ -212,5 +214,9 @@ class PairedBrainAnnDataset(Dataset):
         act = self.activations[act_idx]
         act = (act - self.act_mean) / (self.act_std + 1e-6)  # z-score per feature
         if self.subject_ids is not None:
-            return fmri, act, int(self.subject_ids[idx])
+            # Extra act_idx return value lets downstream code align samples
+            # across subjects by stimulus (needed for the cross-subject
+            # confusion matrix in generate.py). Backward compatible: the
+            # single-subject path still returns the 2-tuple below.
+            return fmri, act, int(self.subject_ids[idx]), int(act_idx)
         return fmri, act

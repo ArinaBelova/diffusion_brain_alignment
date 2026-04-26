@@ -47,6 +47,7 @@ model:
   block_out_channels: [64, 128, 256, 512]
   down_block_types: ["DownBlock2D", "DownBlock2D", "DownBlock2D", "DownBlock2D"] # ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"]
   up_block_types: ["UpBlock2D", "UpBlock2D", "UpBlock2D", "UpBlock2D"] # ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"]
+  resnet_time_scale_shift: "default" # "default" uses the original time embedding; "scale_shift" applies a learned scale and shift to the time embedding in each ResNet block, which was found to improve training stability in early experiments
   ######### dit############## depth=12, hidden_size=384, patch_size=8, num_heads=6
   num_heads: 12
   depth: 12

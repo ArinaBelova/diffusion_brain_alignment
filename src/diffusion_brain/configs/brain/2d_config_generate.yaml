@@ -32,10 +32,10 @@ data:
   ann_model_weights: "ResNet50_Weights.IMAGENET1K_V2"
   ann_activations_data_path: './src/diffusion_brain/data/ann_activations/'
   layer_name: "encoder.layers.encoder_layer_11.mlp" #"avgpool"
-  roi: 5 #18 #10 #5 # do the correct indexing as described in roi_defs/streams.mgz.ctab
+  roi: 5 #5 #18 #10 #5 # do the correct indexing as described in roi_defs/streams.mgz.ctab
   roi_defs_dir: './src/diffusion_brain/data/roi_defs/'
   roi_file: "streams" #"HCP_MMP1" # can be streams or HCP_MMP1 or nsdgeneral
-  fmri_norm_mode: "active_std" #"active_std" #"global_std"
+  fmri_norm_mode: "active_std" #"active_std" #"active_std" #"global_std"
 
 model:
   name: unet-diffusers #unet-diffusers #gfdm-unet #unet-diffusers # unet
@@ -52,10 +52,10 @@ model:
   block_out_channels: [64, 128, 256, 512]
   down_block_types: ["DownBlock2D", "DownBlock2D", "DownBlock2D", "DownBlock2D"] # ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"]
   up_block_types: ["UpBlock2D", "UpBlock2D", "UpBlock2D", "UpBlock2D"] # ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"]
-  remove_deep_conv: false
+  resnet_time_scale_shift: "default" # ROI 18: "scale_shift" and ROI 5: "default" uses the original time embedding; "scale_shift" applies a learned scale and shift to the time embedding in each ResNet block, which was found to improve training stability in early experiments
   input_folder: './model_outputs/ann-brain/ann-brain-cluster' #-197972/'
   run_id: 197972
-  which: "best" #best  # best final all
+  which: "all" #best  # best final all
   use_autoencoder: false
   ae_save_path: './model_outputs/ann-brain/autoencoder/'
   ae_name: 'ae_linear'
@@ -72,6 +72,6 @@ validation:
   label_to_generate: 0 # STUB
   output_folder: './outputs/generated_samples/ann-brain/'
   num_workers: 1
-  final_model_num: 100000
+  final_model_num: 1000000
   thresholding: static #dynamic #static # none / static / dynamic; static clips to fMRI data [min, max], dynamic uses per-sample percentile
   dynamic_thresholding_percentile: 0.995 # only used when thresholding=dynamic

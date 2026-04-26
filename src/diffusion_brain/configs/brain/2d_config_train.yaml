@@ -27,17 +27,17 @@ data:
   resize_to_multiple: 8 #64 for 3 levels of downsampling, big model for 2d case, pad the images to be divisible by this number to ensure compatibility with UNet downsampling/upsampling; should be power of 2 (e.g., 16, 32, 64) depending on the number of stages in UNet
   images_data_path: './src/diffusion_brain/data/data_coco/'
   behav_data_root: './src/diffusion_brain/data/behav/'
-  subj: "subj01"
+  subj: "subj01" # "subj05"
   fmri_data_root: '/data/datapool3/datasets/nsd_betas_condavg/' # TODO: add this as BIND to bash script
   fmri_data_name: 'betas_average_fsaverage.npy'
   ann_model: "vit_b_16" #"resnet50" 
   ann_model_weights: "IMAGENET1K_SWAG_E2E_V1" # "IMAGENET1K_V1" #"IMAGENET1K_V2" # old interface "ResNet50_Weights.IMAGENET1K_V2"
   ann_activations_data_path: './src/diffusion_brain/data/ann_activations/'
   layer_name: "encoder.layers.encoder_layer_11.mlp" #"avgpool"
-  roi: 5 #18 #10 #5 # do the correct indexing as described in roi_defs/streams.mgz.ctab
+  roi: 18 #18 #10 #5 # do the correct indexing as described in roi_defs/streams.mgz.ctab
   roi_defs_dir: './src/diffusion_brain/data/roi_defs/'
-  roi_file: "streams" #"streams" #"HCP_MMP1" # can be streams or HCP_MMP1 or nsdgeneral
-  fmri_norm_mode: "global_std" # "active_std" divides by non-zero voxel std (full image std≈0.3); "global_std" divides by full image std (std≈1, matches VP-SDE schedule)
+  roi_file: "HCP_MMP1" #"streams" #"HCP_MMP1" # can be streams or HCP_MMP1 or nsdgeneral
+  fmri_norm_mode: "active_std" # "active_std" divides by non-zero voxel std (full image std≈0.3); "global_std" divides by full image std (std≈1, matches VP-SDE schedule) "none" if we don't want to apply anything
 
 # need to wire up the model arguments' with UNet class definition
 model:
@@ -56,9 +56,10 @@ model:
   #########################################################################################
   # cross_attention_dim: 2048 # it should be equal to dimensionality of conditioning vector, is inferred during training
   # UNet block configuration — 4 levels with cross-attention at 3 spatial scales
-  block_out_channels: [64, 128, 256, 512]
-  down_block_types: ["DownBlock2D", "DownBlock2D", "DownBlock2D", "DownBlock2D"] # ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"]
-  up_block_types: ["UpBlock2D", "UpBlock2D", "UpBlock2D", "UpBlock2D"] # ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"]
+  block_out_channels: [64, 128, 256, 512] #[128, 128, 256, 256, 512, 512] #[64, 128, 256, 512] #[64, 64, 128, 128, 256, 256]
+  down_block_types: ["DownBlock2D", "DownBlock2D", "DownBlock2D", "DownBlock2D"] #["DownBlock2D", "DownBlock2D", "DownBlock2D", "DownBlock2D", "DownBlock2D", "DownBlock2D"] #["DownBlock2D", "DownBlock2D", "DownBlock2D", "DownBlock2D"] # ["DownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D", "CrossAttnDownBlock2D"]
+  up_block_types: ["UpBlock2D", "UpBlock2D", "UpBlock2D", "UpBlock2D"] #["UpBlock2D", "UpBlock2D", "UpBlock2D", "UpBlock2D", "UpBlock2D", "UpBlock2D"] #["UpBlock2D", "UpBlock2D", "UpBlock2D", "UpBlock2D"] # ["CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "CrossAttnUpBlock2D", "UpBlock2D"]
+  resnet_time_scale_shift: "default" # "default" uses the original time embedding; "scale_shift" applies a learned scale and shift to the time embedding in each ResNet block, which was found to improve training stability in early experiments
   ######### dit############## depth=12, hidden_size=384, patch_size=8, num_heads=6
   num_heads: 12
   depth: 12
@@ -89,13 +90,13 @@ optim:
   # patience: 50
 
 train:
-  resume_from: ~ #"./model_outputs/ann-brain/ann-brain-cluster-234770/checkpoint_step_15000.pth" # path to checkpoint file to resume training (e.g., ./model_outputs/ann-brain/ann-brain-cluster-229416/checkpoint_step_5000.pth)
+  resume_from: ~ #"./model_outputs/ann-brain/ann-brain-cluster-246895/checkpoint_best.pth" #"./model_outputs/ann-brain/ann-brain-cluster-234770/checkpoint_step_15000.pth" # path to checkpoint file to resume training (e.g., ./model_outputs/ann-brain/ann-brain-cluster-229416/checkpoint_step_5000.pth)
   steps: 1000000 #10000 #2000 # train steps
-  batch_size: 16 # 32 on gpu5 # reduced for memory with CrossAttn blocks
+  batch_size: 16 #for a XL model #16 # 32 on gpu5 # reduced for memory with CrossAttn blocks
   dataset_size: 9485 # 10000 - 515 images as train
   num_workers: 4
   histogram_freq: 1000 # frequency of logging loss histogram to wandb, set to 0 to disable
-  use_mixed_precision: true  # Enable bfloat16 training
+  use_mixed_precision: false  # Enable bfloat16 training
   gradient_accumulation_steps: 2 #4 #8  # effective batch size = batch_size * gradient_accumulation_steps
   gradient_checkpointing: true #true  #ue saves ~30-40% memory
   ema_decay: 0.9999  # EMA decay rate for shadow weights (0.0 to disable); used for validation/generation
@@ -111,10 +112,10 @@ train:
 validation:
   ode: false
   eval_freq: 10000 #100
-  batch_size: 64 #128 on gpu5 #64 #32 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
+  batch_size: 64 # for XL model #64 #128 on gpu5 #64 #32 # maybe we want batch size of 64 for validation and then display just the first batch in wandb?
   n_steps: 100 # SDE steps
   guidance_scale: 5.0 #3.0 #3.0 #3.0 #10.0 #0.8
-  output_folder: '/outputs/ann-brain/'
+  output_folder: './outputs/ann-brain/'
   num_workers: 1
   label_to_generate: 1 # it needs to be removed later when refactoring diffusivity.py as in ann-brain case we have continuous conditioning vector and not class labels;
   debug_conditioning: false

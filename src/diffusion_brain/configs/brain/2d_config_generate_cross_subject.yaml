@@ -49,8 +49,7 @@ model:
   block_out_channels: [64, 128, 256, 512] # must match training config (3-level small config)
   down_block_types: ["DownBlock2D", "DownBlock2D", "DownBlock2D", "DownBlock2D"]
   up_block_types: ["UpBlock2D", "UpBlock2D", "UpBlock2D", "UpBlock2D"]
-  remove_deep_conv: false
-  input_folder: './model_outputs/ann-brain/ann-brain-cluster'
+  resnet_time_scale_shift: "default" # "default" uses the original time embedding; "scale_shift" applies a learned scale and shift to the time embedding in each ResNet block, which was found to improve training stability in early experiments  input_folder: './model_outputs/ann-brain/ann-brain-cluster'
   run_id: 000000 # override at submit time with the single-subject job ID
   which: "best"
   use_autoencoder: false

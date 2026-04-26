@@ -164,6 +164,7 @@ def set_model(args):
             mid_block_type=mid_block_type,
             cross_attention_dim=args.model.cross_attention_dim,
             num_class_embeds=None,
+            resnet_time_scale_shift=args.model.resnet_time_scale_shift,
         )
 
         if condition_mode == "additive":
