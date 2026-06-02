@@ -484,23 +484,25 @@ def signal_to_2d(args, **kwargs):
     # once from the grid mapping, independent of any sample's values.
     active_mask = count_2d > 0
 
+    # Column-keep mask from the geometry (not from sample values) so that
+    # the cropped matrix shape always matches `locations_roi` below. Using
+    # a data-dependent `~all_zero` rule per sample would drop columns where
+    # an active geometry happens to land on all-False/all-zero values for
+    # this particular signal (e.g. a sparse boolean mask), making the
+    # projected shape disagree with the precomputed locations.
+    valid_cols_mask = ~np.all(count_2d == 0, axis=0)
+
     data_roi_2d = []
     for sample in range(data_roi.shape[0]):
         values = data_roi[sample]
         matrix_2d = np.zeros((grid_size, grid_size), dtype=np.float32)
         np.add.at(matrix_2d, (y_grid, x_grid), values)
         matrix_2d[active_mask] /= count_2d[active_mask]
-
-        # Remove all-zero columns (gap between hemispheres)
-        valid_cols = ~np.all(matrix_2d == 0, axis=0)
-        if valid_cols.any():
-            matrix_2d = matrix_2d[:, valid_cols]
-
+        matrix_2d = matrix_2d[:, valid_cols_mask]
         data_roi_2d.append(matrix_2d)
 
-    # Active pixel locations from the geometry, not from sample values
-    # (avoids missing pixels where sample 0 happens to be exactly zero)
-    valid_cols_mask = ~np.all(count_2d == 0, axis=0)
+    # Active pixel locations from the same geometry mask used for cropping
+    # above — keeps the cropped matrix and the returned locations aligned.
     cropped_active = active_mask[:, valid_cols_mask]
     locations_roi = np.where(cropped_active)
 

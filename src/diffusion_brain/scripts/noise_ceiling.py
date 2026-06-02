@@ -319,6 +319,7 @@ def main():
         ).tolist()
     )
 
+    all_split_results = {}
     for split_name, split_mask in [
         ("test", np.array([int(nid) in test_nsd_ids_set for nid in nsd_ids])),
         ("train", np.array([int(nid) not in test_nsd_ids_set for nid in nsd_ids])),
@@ -332,6 +333,7 @@ def main():
         split_nsd_ids = nsd_ids[split_mask]
 
         results = compute_noise_ceiling_1d(split_betas, split_nsd_ids)
+        all_split_results[split_name] = results
 
         print(f"\n  === LOWER BOUND (leave-one-out) ===")
         print(f"  Unaveraged (pairwise):    {results['mean_nc_lower_unavg']:.4f}")
@@ -395,20 +397,20 @@ def main():
             f"noise_ceiling_{subj}_{args.data.roi_file}_{args.data.roi}.npz",
         )
 
-    # Re-compute on all data for saving
-    all_results = compute_noise_ceiling_1d(betas_roi, nsd_ids)
+    # Save test-split results (the partition used for model evaluation)
+    test_results = all_split_results["test"]
     np.savez(
         out_path,
         # Lower bound
-        nc_lower_unavg=all_results["nc_lower_unavg"],
-        nc_lower_unavg_clamped=all_results["nc_lower_unavg_clamped"],
-        nc_lower_avg=all_results["nc_lower_avg"],
-        nc_lower_avg_clamped=all_results["nc_lower_avg_clamped"],
+        nc_lower_unavg=test_results["nc_lower_unavg"],
+        nc_lower_unavg_clamped=test_results["nc_lower_unavg_clamped"],
+        nc_lower_avg=test_results["nc_lower_avg"],
+        nc_lower_avg_clamped=test_results["nc_lower_avg_clamped"],
         # Upper bound
-        nc_upper_unavg=all_results["nc_upper_unavg"],
-        nc_upper_unavg_clamped=all_results["nc_upper_unavg_clamped"],
-        nc_upper_avg=all_results["nc_upper_avg"],
-        nc_upper_avg_clamped=all_results["nc_upper_avg_clamped"],
+        nc_upper_unavg=test_results["nc_upper_unavg"],
+        nc_upper_unavg_clamped=test_results["nc_upper_unavg_clamped"],
+        nc_upper_avg=test_results["nc_upper_avg"],
+        nc_upper_avg_clamped=test_results["nc_upper_avg_clamped"],
         # Metadata
         roi_indices=roi_indices,
         subj=subj,

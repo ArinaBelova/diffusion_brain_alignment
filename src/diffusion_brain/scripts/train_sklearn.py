@@ -1,5 +1,5 @@
 from sklearn.linear_model import RidgeCV
-import torch 
+import torch
 from scipy.stats import pearsonr
 import numpy as np
 # import rsatoolbox # need to install it again in the cluster
@@ -9,8 +9,16 @@ import os
 
 from diffusion_brain.data_utils import get_dataloader
 from diffusion_brain.utils.setup import parse_args_and_setup_wandb
-from diffusion_brain.utils.fmri_behav_data_utils import compute_rdm
-from diffusion_brain.utils.visualise import pyplot_brain, get_r_across_images_2d_data, get_r_across_images_1d_data
+# from diffusion_brain.utils.fmri_behav_data_utils import compute_rdm
+from diffusion_brain.utils.visualise import pyplot_brain, get_r_across_images_2d_data, get_r_across_images_1d_data, fmri_to_wandb_image
+from diffusion_brain.utils.nc_correction import (
+    NC_MASK_KEY_DEFAULT,
+    NC_MASKS_PATH_DEFAULT,
+    build_brain_map,
+    correct_r_by_nc_with_mask,
+    get_nc_perm_aligned,
+    per_voxel_r,
+)
 
 def get_train_test_numpy_datasets(train_dataloader, test_dataloader, args):
     print(f"Length of the dataloaders: {len(train_dataloader)}, {len(test_dataloader)}", flush=True)
@@ -108,6 +116,102 @@ def train(train_activations_dataset, train_fmri_dataset, args):
 
     return clf
 
+def _apply_within_subject_nc_correction(
+    fmri_predicted_1d, true_fmri_1d, args, y_coords, x_coords, image_shape, step,
+):
+    """Apply within-subject permutation NC + sig-mask correction and log to wandb.
+
+    Mirrors `_evaluate_single_subject_nc_correction` in generate.py: divides
+    per-voxel r by the within-subject NC lower bound for voxels passing the
+    significance mask (loaded from the aggregated permutation pkl). Voxels
+    failing the mask are excluded from the corrected metric.
+    """
+    subj = args.data.subj
+    masks_path = getattr(args.data, "nc_masks_path", NC_MASKS_PATH_DEFAULT)
+    mask_key = getattr(args.validation, "nc_mask_key", NC_MASK_KEY_DEFAULT)
+
+    nc_pixels, sig_mask, nc_source = get_nc_perm_aligned(
+        subj, args.data.roi_file, args.data.roi, y_coords, x_coords,
+        masks_path=masks_path, mask_key=mask_key,
+    )
+    if nc_pixels is None:
+        print(
+            f"\nWARNING: within-subject permutation NC entry not found for "
+            f"({subj}, {args.data.roi_file}_{args.data.roi}) at {masks_path} — "
+            "skipping NC correction.",
+            flush=True,
+        )
+        return
+
+    r_per_voxel = per_voxel_r(fmri_predicted_1d, true_fmri_1d)
+    r_corrected, apply_mask = correct_r_by_nc_with_mask(r_per_voxel, nc_pixels, sig_mask)
+    n_apply = int(apply_mask.sum())
+    n_total = len(nc_pixels)
+    raw_mean = float(np.nanmean(r_per_voxel))
+    nc_mean = float(np.nanmean(nc_pixels))
+    mean_rc = float(np.nanmean(r_corrected))
+    median_rc = float(np.nanmedian(r_corrected))
+
+    print(f"\n{'=' * 60}", flush=True)
+    print(f"Single-subject NC correction (Ridge baseline, {subj})", flush=True)
+    print(f"{'=' * 60}", flush=True)
+    print(f"  NC source              : {nc_source}", flush=True)
+    print(
+        f"  significant voxels (applied): {n_apply}/{n_total} "
+        f"({100.0 * n_apply / max(n_total, 1):.1f}%)",
+        flush=True,
+    )
+    print(f"  raw mean r              = {raw_mean:+.4f}", flush=True)
+    print(f"  mean NC lower bound     = {nc_mean:+.4f}", flush=True)
+    print(f"  mean r/NC (corrected)   = {mean_rc:+.4f}", flush=True)
+    print(f"  median r/NC (corrected) = {median_rc:+.4f}", flush=True)
+    print(f"{'=' * 60}\n", flush=True)
+
+    rc_img = build_brain_map(r_corrected, image_shape, y_coords, x_coords)
+    nc_img = build_brain_map(nc_pixels, image_shape, y_coords, x_coords)
+    sig_img = build_brain_map(sig_mask.astype(np.float64), image_shape, y_coords, x_coords)
+
+    wandb.log({
+        "noise_corrected/mean_r": mean_rc,
+        "noise_corrected/median_r": median_rc,
+        "noise_corrected/raw_mean_r": raw_mean,
+        "noise_corrected/mean_nc_lower_bound": nc_mean,
+        "noise_corrected/n_apply_voxels": n_apply,
+        "noise_corrected/n_total_voxels": n_total,
+        "noise_corrected/frac_apply": float(n_apply / max(n_total, 1)),
+        "noise_corrected/nc_source": nc_source,
+        "noise_corrected/r_image": fmri_to_wandb_image(
+            rc_img, title=f"{subj} r/NC (Ridge, step={step})", robust=True,
+        ),
+        "noise_corrected/nc_lower_bound_image": fmri_to_wandb_image(
+            nc_img,
+            title=f"NC lower bound ({subj}) — {args.data.roi_file}_{args.data.roi}",
+        ),
+        "noise_corrected/sig_mask_image": fmri_to_wandb_image(
+            sig_img, title=f"{subj} within-subject sig mask",
+        ),
+        "model_step": step,
+    })
+
+    output_dir = os.path.join(
+        getattr(args.validation, "output_folder", "./model_outputs/ann-brain/"),
+        str(args.jobid),
+    )
+    os.makedirs(output_dir, exist_ok=True)
+    np.savez(
+        os.path.join(output_dir, "ridge_single_subject_nc_corrected.npz"),
+        r_per_voxel=r_per_voxel,
+        r_corrected=r_corrected,
+        nc_lower_bound=nc_pixels,
+        sig_mask=sig_mask,
+        apply_mask=apply_mask,
+        nc_source=nc_source,
+        subj=subj,
+        roi=args.data.roi,
+        roi_file=args.data.roi_file,
+    )
+
+
 def validate_and_visualise(clf, true_activations_dataset, true_fmri_dataset, args, step="sklearn_fitting"):
     true_fmri_dataset_copy = true_fmri_dataset.copy()  # Make a copy to avoid modifying the original dataset
     if args.data.is_2d:
@@ -137,8 +241,19 @@ def validate_and_visualise(clf, true_activations_dataset, true_fmri_dataset, arg
         y_coords = locations_roi[0]
         x_coords = locations_roi[1]
         fmri_predicted_2d[:, y_coords, x_coords] = fmri_predicted  # fill in the predicted values at the ROI locations
+        get_r_across_images_2d_data(args, fmri_predicted_2d, true_fmri_dataset_copy, step_num=step)
+
+        # Within-subject NC correction (mirrors generate.py single-subject path)
+        _apply_within_subject_nc_correction(
+            fmri_predicted_1d=fmri_predicted,
+            true_fmri_1d=true_fmri_dataset,
+            args=args,
+            y_coords=y_coords,
+            x_coords=x_coords,
+            image_shape=fmri_predicted_2d.shape[1:],
+            step=step,
+        )
         fmri_predicted = fmri_predicted_2d
-        get_r_across_images_2d_data(args, fmri_predicted, true_fmri_dataset_copy, step_num=step)
     else:
         print("Visualising predicted fMRI data...", flush=True)
         # can only visualise one batch element

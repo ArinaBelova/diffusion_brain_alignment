@@ -41,7 +41,7 @@ apptainer exec --nv --bind /data/cluster/users/belova/.netrc,${LOCAL_JOB_DIR},sr
 --env PYTHONPATH=/opt/app/src,CUDA_LAUNCH_BLOCKING=1 \
 ./cluster/diffusion-brain.sif \
 bash -c "python ${SLURM_SUBMIT_DIR}/src/diffusion_brain/scripts/generate.py --config ${SLURM_SUBMIT_DIR}/src/diffusion_brain/configs/brain/config_generate.yaml  \
---jobid ${SLURM_JOB_NAME}-${SLURM_JOB_ID} --override data.roi=$1 data.ann_model_weights=$2 data.ann_model=$3 data.roi_file=$4 validation.guidance_scale=$5 model.run_id=$6 validation.ode=$7 validation.n_steps=$8" 
+--jobid ${SLURM_JOB_NAME}-${SLURM_JOB_ID} --override data.roi=$1 data.ann_model_weights=$2 data.layer_name=$3 data.ann_model=$4 data.roi_file=$5 validation.guidance_scale=$6 model.run_id=$7 validation.ode=$8 validation.n_steps=$9" 
 
 # information about the outputs of the script
 echo "‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾‾"

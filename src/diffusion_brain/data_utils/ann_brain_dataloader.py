@@ -9,8 +9,18 @@ import os
 import tempfile
 
 from diffusion_brain.datasets.paired_brain_ann_dataset import AnnActivationsDataset, PairedBrainAnnDataset
-from diffusion_brain.utils.ann_activations_utils import ensure_activations_exist
+from diffusion_brain.utils.ann_activations_utils import ensure_activations_exist, _nsd_ids_hash
 from diffusion_brain.utils.fmri_behav_data_utils import get_train_test_subsets, get_train_test_indices, ensure_fmri_roi_exists, get_multi_subject_train_test_indices
+
+
+def _activations_path(args, nsd_ids):
+    """Build a cache-safe activation file path that encodes which NSD IDs are included."""
+    h = _nsd_ids_hash(nsd_ids)
+    return os.path.join(
+        args.data.ann_activations_data_path,
+        args.data.ann_model,
+        f"activations_weights_{args.data.ann_model_weights}_layer_{args.data.layer_name}_{len(nsd_ids)}_samples_{h}.pt"
+    )
 
 class ZipDataset(Dataset):
     def __init__(self, *datasets):
@@ -62,16 +72,8 @@ def get_ann_brain_dataloader(args):
     fmri_roi_path = ensure_fmri_roi_exists(args)
 
     # 3. Ensure ANN activations exist (main process, thread-safe)
-    train_activations_path = os.path.join(
-        args.data.ann_activations_data_path,
-        args.data.ann_model,
-        f"activations_weights_{args.data.ann_model_weights}_layer_{args.data.layer_name}_{len(train_nsd_ids)}_samples.pt"
-    )
-    test_activations_path = os.path.join(
-        args.data.ann_activations_data_path,
-        args.data.ann_model,
-        f"activations_weights_{args.data.ann_model_weights}_layer_{args.data.layer_name}_{len(test_nsd_ids)}_samples.pt"
-    )
+    train_activations_path = _activations_path(args, train_nsd_ids)
+    test_activations_path = _activations_path(args, test_nsd_ids)
     ensure_activations_exist(train_activations_path, train_nsd_ids, args)
     ensure_activations_exist(test_activations_path, test_nsd_ids, args)
 
@@ -162,16 +164,8 @@ def get_ann_brain_dataloader_multisubject(args):
           f"union test NSD IDs: {len(union_test_nsd)}", flush=True)
 
     # 2. Ensure ANN activations exist for the union sets
-    train_activations_path = os.path.join(
-        args.data.ann_activations_data_path,
-        args.data.ann_model,
-        f"activations_weights_{args.data.ann_model_weights}_layer_{args.data.layer_name}_{len(union_train_nsd)}_samples.pt"
-    )
-    test_activations_path = os.path.join(
-        args.data.ann_activations_data_path,
-        args.data.ann_model,
-        f"activations_weights_{args.data.ann_model_weights}_layer_{args.data.layer_name}_{len(union_test_nsd)}_samples.pt"
-    )
+    train_activations_path = _activations_path(args, union_train_nsd)
+    test_activations_path = _activations_path(args, union_test_nsd)
     ensure_activations_exist(train_activations_path, union_train_nsd, args)
     ensure_activations_exist(test_activations_path, union_test_nsd, args)
 

@@ -121,6 +121,11 @@ def run_forward_sde(process: StandardDiffusion,
 
     return torch.stack(x_traj, dim = 0), time_grid 
 
+# Temporary: ensures the denoising-trajectory log fires once per process so we
+# don't flood wandb across model checkpoints / batches / average_over_num_runs.
+_DENOISING_TRAJECTORY_LOGGED = False
+
+
 @torch.inference_mode()
 def run_reverse_sde(diffusion_process: StandardDiffusion,
             x_0: torch.Tensor,
@@ -136,6 +141,7 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
             args=None,
             ann_tokenizer=None,
             identity_label: torch.Tensor = None,
+            return_trajectory: bool = False,
             **kwargs
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Function to run reverse-time stochastic differential equation. We assume a deterministic initial Gaussian distribution p_T."""
@@ -149,6 +155,35 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
     time_grid = torch.linspace(T, epsilon, n_steps + 1).to(device)
     dt = time_grid[1] - time_grid[0]
     x_traj = [x_0]
+
+    global _DENOISING_TRAJECTORY_LOGGED
+    log_denoising = (
+        args is not None
+        and not _DENOISING_TRAJECTORY_LOGGED
+    )
+    snapshot_indices = set()
+    trajectory_snapshots = []  # list of (t_value, np.ndarray) for sample[0]
+    # Full-batch trajectory snapshots, returned to the caller when
+    # `return_trajectory=True`. Each entry: (t_value, np.ndarray of shape
+    # matching x_0 batch). Used by generate.py for per-subject trajectory GIFs.
+    full_trajectory_snapshots = []
+    full_snapshot_indices = set()
+    if return_trajectory:
+        n_full_snap = int(getattr(args.validation, "trajectory_n_snapshots", 12)) if args is not None else 12
+        n_full_snap = max(2, min(n_full_snap, n_steps + 1))
+        full_snapshot_indices = set(np.linspace(0, n_steps, n_full_snap, dtype=int).tolist())
+        if 0 in full_snapshot_indices:
+            full_trajectory_snapshots.append(
+                (float(time_grid[0].item()), x_0.detach().cpu().numpy())
+            )
+    if log_denoising:
+        n_snapshots = int(getattr(args.validation, "log_denoising_n_snapshots", 10))
+        n_snapshots = max(2, min(n_snapshots, n_steps + 1))
+        snapshot_indices = set(np.linspace(0, n_steps, n_snapshots, dtype=int).tolist())
+        if 0 in snapshot_indices:
+            trajectory_snapshots.append(
+                (float(time_grid[0].item()), x_0[0].detach().cpu().numpy())
+            )
     # I preliminary removed all the .long() casting to avoid CUDA crash
         
     # Dual-guidance mode: independent CFG scales for ANN content vs subject identity.
@@ -215,22 +250,43 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
             condition_mode = getattr(args.model, "condition_mode", "cross_attention")
 
             if condition_mode == "additive" and cond is not None:
-                # Pure additive CFG: no cross-attention blocks, ANN through ann_embedding
-                # Unconditional: both ANN and identity are None (dropped)
-                score_uncond = score_fn(x, time_unet, encoder_hidden_states=None, ann_signal=None, identity_label=None).sample
+                # Pure additive CFG: no cross-attention blocks, ANN through ann_embedding.
+                # Mirror train.py dropout states for the uncond pass:
+                #   - ANN: zero vector (matches train-time dropout `label * (1-mask)`,
+                #     hits `ann_embedding` so the projection's bias `b` is added to emb).
+                #   - Identity: null token at index `num_identities` (matches
+                #     train-time `masked_identity[mask] = num_identities`, hits the
+                #     learned null embedding row).
+                # Passing None for either would skip the embedding entirely and produce
+                # a different uncond state from the one the model was trained on.
+                ann_uncond = torch.zeros_like(cond).float()
+                if identity_label is not None:
+                    num_identities = int(getattr(args.model, "num_classes", 8))
+                    null_id = torch.full(
+                        (x.shape[0],), num_identities, dtype=torch.long, device=x.device
+                    )
+                else:
+                    null_id = None
+
+                score_uncond = score_fn(
+                    x, time_unet,
+                    encoder_hidden_states=None,
+                    ann_signal=ann_uncond,
+                    identity_label=null_id,
+                ).sample
                 # Conditional: pass real ANN signal and identity label
                 score_cond = score_fn(x, time_unet, encoder_hidden_states=None, ann_signal=cond.float(), identity_label=identity_label).sample
 
-                # Dual-guidance: extra pass with ANN only (no identity). Used to
-                # decompose the CFG direction into "content" (w_ann) and
-                # "identity" (w_id) terms. Only meaningful when we actually
-                # have a real identity_label to drop in the middle pass.
+                # Dual-guidance: extra pass with ANN only (identity dropped to null).
+                # Used to decompose the CFG direction into "content" (w_ann) and
+                # "identity" (w_id) terms. Only meaningful when we actually have a
+                # real identity_label to drop in the middle pass.
                 if dual_guidance_flag and identity_label is not None:
                     score_ann_only = score_fn(
                         x, time_unet,
                         encoder_hidden_states=None,
                         ann_signal=cond.float(),
-                        identity_label=None,
+                        identity_label=null_id,
                     ).sample
 
                 if debug_conditioning and idx == 0:
@@ -421,6 +477,128 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
 
         x_traj.append(next_step)
 
+        if log_denoising and (idx + 1) in snapshot_indices:
+            trajectory_snapshots.append(
+                (float(time_grid[idx + 1].item()), next_step[0].detach().cpu().numpy())
+            )
+        if return_trajectory and (idx + 1) in full_snapshot_indices:
+            full_trajectory_snapshots.append(
+                (float(time_grid[idx + 1].item()), next_step.detach().cpu().numpy())
+            )
+
+    if log_denoising and trajectory_snapshots:
+        is_2d = args is not None and getattr(args.data, "is_2d", False)
+        if not is_2d:
+            print("[denoising-log] Skipping trajectory log: only 2D is supported", flush=True)
+        else:
+            try:
+                import os
+                from io import BytesIO
+                import wandb
+                import matplotlib
+                matplotlib.use("Agg")
+                from matplotlib import pyplot as plt
+                from matplotlib.colors import TwoSlopeNorm
+                from PIL import Image
+
+                crop_to = None
+                if (
+                    hasattr(args.model, "input_size")
+                    and len(args.model.input_size) == 3
+                ):
+                    _, h_orig, w_orig = args.model.input_size
+                    crop_to = (int(h_orig), int(w_orig))
+
+                # Pre-crop snapshots so the strip figure and the GIF share frames.
+                cropped_snapshots = []
+                for ti, arr in trajectory_snapshots:
+                    img = np.squeeze(arr)
+                    if crop_to is not None and img.ndim == 2:
+                        h_orig, w_orig = crop_to
+                        img = img[:h_orig, :w_orig]
+                    cropped_snapshots.append((ti, img))
+
+                # Strip figure: all snapshots in one row (static overview).
+                n = len(cropped_snapshots)
+                fig, axes = plt.subplots(1, n, figsize=(2.0 * n, 2.5))
+                if n == 1:
+                    axes = [axes]
+                for ax, (ti, img) in zip(axes, cropped_snapshots):
+                    vmax = max(abs(float(img.min())), abs(float(img.max())), 1e-8)
+                    ax.imshow(
+                        img,
+                        cmap="RdBu_r",
+                        origin="lower",
+                        norm=TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax),
+                    )
+                    ax.set_title(f"t={ti:.3f}", fontsize=8)
+                    ax.set_xticks([])
+                    ax.set_yticks([])
+                fig.suptitle(
+                    f"Reverse SDE denoising trajectory (sample[0], "
+                    f"n_steps={n_steps}, guidance_scale={guidance_scale})",
+                    fontsize=10,
+                )
+                fig.tight_layout(rect=[0, 0, 1, 0.95])
+
+                # GIF: one frame per snapshot, played back as an animation.
+                frames = []
+                for ti, img in cropped_snapshots:
+                    fframe, axf = plt.subplots(figsize=(4, 4))
+                    vmax = max(abs(float(img.min())), abs(float(img.max())), 1e-8)
+                    axf.imshow(
+                        img,
+                        cmap="RdBu_r",
+                        origin="lower",
+                        norm=TwoSlopeNorm(vmin=-vmax, vcenter=0.0, vmax=vmax),
+                    )
+                    axf.set_title(
+                        f"Reverse SDE  t={ti:.3f}  "
+                        f"(w={guidance_scale}, n_steps={n_steps})",
+                        fontsize=10,
+                    )
+                    axf.set_xticks([])
+                    axf.set_yticks([])
+                    fframe.tight_layout()
+                    buf = BytesIO()
+                    fframe.savefig(buf, format="png", dpi=80, bbox_inches="tight")
+                    plt.close(fframe)
+                    buf.seek(0)
+                    frames.append(Image.open(buf).convert("RGB"))
+
+                gif_dir = os.path.join(
+                    getattr(args.validation, "output_folder", "./model_outputs/ann-brain/"),
+                    str(getattr(args, "jobid", "denoising_debug")),
+                )
+                os.makedirs(gif_dir, exist_ok=True)
+                gif_path = os.path.join(gif_dir, "denoising_trajectory.gif")
+                # Play once and hold the final frame so the converged brain
+                # image stays readable instead of looping back to noise.
+                durations = [200] * (len(frames) - 1) + [10000]
+                frames[0].save(
+                    gif_path,
+                    save_all=True,
+                    append_images=frames[1:],
+                    duration=durations,
+                    loop=1,
+                    optimize=False,
+                )
+
+                wandb.log({
+                    "denoising/trajectory": wandb.Image(fig),
+                    "denoising/trajectory_gif": wandb.Video(gif_path, fps=5, format="gif"),
+                })
+                plt.close(fig)
+                _DENOISING_TRAJECTORY_LOGGED = True
+                print(
+                    f"[denoising-log] Logged {n} trajectory snapshots to wandb "
+                    f"('denoising/trajectory' strip + 'denoising/trajectory_gif') "
+                    f"and saved GIF to {gif_path}",
+                    flush=True,
+                )
+            except Exception as e:
+                print(f"[denoising-log] Failed to log trajectory: {e}", flush=True)
+
     def scale_to_range(tensor, new_min=0.0, new_max=1.0):
         t_min = tensor.min()
         t_max = tensor.max()
@@ -439,6 +617,13 @@ def run_reverse_sde(diffusion_process: StandardDiffusion,
                 print("Scaling final output to data range [{}, {}]".format(fmri_min, fmri_max), flush=True)
                 x_traj[-1] = scale_to_range(x_traj[-1], new_min=fmri_min, new_max=fmri_max)
 
+    if return_trajectory:
+        # Apply the same final thresholding to the last snapshot so the GIF's
+        # final frame matches what the caller receives as x_0.
+        if full_trajectory_snapshots:
+            t_last, _ = full_trajectory_snapshots[-1]
+            full_trajectory_snapshots[-1] = (t_last, x_traj[-1].detach().cpu().numpy())
+        return x_traj[-1], full_trajectory_snapshots
     return x_traj[-1]
 
 @torch.inference_mode()
@@ -449,7 +634,8 @@ def generate_samples(num_samples: int,
                      device,
                      cond: torch.Tensor = None,
                      ann_tokenizer=None,
-                     identity_label: torch.Tensor = None):
+                     identity_label: torch.Tensor = None,
+                     return_trajectory: bool = False):
     """Function to generate samples from the learned diffusion model"""
     # initial samples from p_T
     raw_model = _unwrap_model(model)
@@ -500,9 +686,9 @@ def generate_samples(num_samples: int,
     # print("in generate_samples noise shape is {}".format(noise.shape), flush=True)
     # print("in generate_samples mu and std shapes:", mu.shape, std.shape, flush=True)
     
-    x_T = std * noise # + mu # mean was commented out 
+    x_T = std * noise # + mu # mean was commented out
     # was _, x_0 as we had also trajectory tracked, but no need for that for the sake of generation speed
-    x_0 = run_reverse_sde(
+    sde_result = run_reverse_sde(
         diffusion_process=diffusion_process,
         x_0=x_T, # .cpu().numpy()
         score_fn=model,
@@ -517,18 +703,29 @@ def generate_samples(num_samples: int,
         args=args,
         ann_tokenizer=ann_tokenizer,
         identity_label=identity_label,
+        return_trajectory=return_trajectory,
     )
+    if return_trajectory:
+        x_0, trajectory = sde_result
+    else:
+        x_0 = sde_result
 
     if args.model.name == "gfdm-unet-1d-cond":
         x_0 = x_0[..., :orig_len]
-    
+        if return_trajectory:
+            trajectory = [(t, arr[..., :orig_len]) for t, arr in trajectory]
+
     # Crop 2D brain data back to original size
     is_2d = getattr(args.data, "is_2d", False)
     if is_2d and original_size is not None and len(original_size) == 3:
         _, orig_h, orig_w = original_size
         x_0 = x_0[..., :orig_h, :orig_w]
+        if return_trajectory:
+            trajectory = [(t, arr[..., :orig_h, :orig_w]) for t, arr in trajectory]
 
-    # print("x_0 and label shapes are: ", x_0.shape, cond.shape, flush=True)    
+    # print("x_0 and label shapes are: ", x_0.shape, cond.shape, flush=True)
+    if return_trajectory:
+        return x_0, trajectory
     return x_0 # * 255 as I don't really know what scale the model learned...
 
 class VESDE(StandardDiffusion):

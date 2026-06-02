@@ -1,10 +1,10 @@
-ROIS=(18)
-ROI_FILES=("HCP_MMP1") # "HCP_MMP1"
+ROIS=(5 18)
+ROI_FILES=("streams" "HCP_MMP1") # "HCP_MMP1"
 # WEIGHTS=("ResNet50_Weights.IMAGENET1K_V2" "ResNet101_Weights.IMAGENET1K_V2" "ResNet152_Weights.IMAGENET1K_V2")
 # MODELS=("resnet50" "resnet101" "resnet152")
 
-WEIGHTS=("ResNet50_Weights.IMAGENET1K_V2")
-MODELS=("resnet50")
+WEIGHTS=("IMAGENET1K_SWAG_E2E_V1")  # IMAGENET1K_V2
+MODELS=("vit_b_16") # resnet50
 
 for i in "${!MODELS[@]}"; do
     model="${MODELS[$i]}"

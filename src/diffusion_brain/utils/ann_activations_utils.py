@@ -1,3 +1,5 @@
+import hashlib
+
 import torch
 import h5py
 from torch.utils.data import Dataset
@@ -11,6 +13,12 @@ from filelock import FileLock
 from pathlib import Path
 
 from diffusion_brain.utils.fmri_behav_data_utils import _user_scoped_lock_path
+
+
+def _nsd_ids_hash(nsd_ids):
+    """Return a short hex hash of the NSD ID array for cache-safe filenames."""
+    raw = np.array(sorted(nsd_ids), dtype=np.int64).tobytes()
+    return hashlib.sha256(raw).hexdigest()[:12]
 
 def load_model(model_name: str, weights_name: str = "DEFAULT"):
     # Get model constructor and weights class
@@ -75,10 +83,11 @@ def precompute_activations(indices_to_extract, args, data_name="imgBrick", save_
     
     # Save
     if save_path is None:
+        h = _nsd_ids_hash(indices_to_extract)
         save_path = os.path.join(
             args.data.ann_activations_data_path,
             model_name,
-            f"activations_weights_{weights_name}_layer_{args.data.layer_name}_{len(indices)}_samples.pt"
+            f"activations_weights_{weights_name}_layer_{args.data.layer_name}_{len(indices)}_samples_{h}.pt"
         )
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     torch.save(activations, save_path)

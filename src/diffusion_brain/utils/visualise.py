@@ -16,7 +16,7 @@ def _attach_model_step(payload, step_num):
     return data
 
 
-def fmri_to_wandb_image(img_2d, title=""):
+def fmri_to_wandb_image(img_2d, title="", robust=False, robust_percentile=99.0):
     """Render a 2D fMRI map with diverging RdBu_r colormap and return a wandb.Image.
 
     Parameters
@@ -25,10 +25,30 @@ def fmri_to_wandb_image(img_2d, title=""):
         2D array (H, W). Squeeze any leading dims before calling.
     title : str, optional
         Title for the plot.
+    robust : bool, default False
+        When True, set the symmetric color range from a percentile of
+        |non-zero finite values| instead of their absolute max. Useful for
+        sparse NC-corrected maps where a single low-NC voxel can produce
+        an outlier r/NC value that otherwise dominates the colormap.
+    robust_percentile : float, default 99.0
+        Percentile (of |non-zero finite values|) used when ``robust=True``.
     """
     from matplotlib.colors import TwoSlopeNorm
-    img = np.squeeze(img_2d)
-    abs_max = max(abs(img.min()), abs(img.max()), 1e-8)
+    img = np.squeeze(img_2d).astype(np.float64, copy=True)
+    # Replace any non-finite cells with 0 so TwoSlopeNorm / colorbar don't
+    # see inf or NaN (e.g. from r / 0 when the inter-subject NC clamped a
+    # voxel to 0).
+    img[~np.isfinite(img)] = 0.0
+    if robust:
+        nonzero_abs = np.abs(img[img != 0])
+        if nonzero_abs.size > 0:
+            abs_max = float(np.percentile(nonzero_abs, robust_percentile))
+        else:
+            abs_max = 0.0
+        abs_max = max(abs_max, 1e-8)
+        img = np.clip(img, -abs_max, abs_max)
+    else:
+        abs_max = max(abs(img.min()), abs(img.max()), 1e-8)
     fig, ax = plt.subplots()
     ax.imshow(img, cmap='RdBu_r', origin="lower",
               norm=TwoSlopeNorm(vmin=-abs_max, vcenter=0, vmax=abs_max))
@@ -127,6 +147,9 @@ def get_r_across_images_2d_data(args, generated_data_roi_2d, true_fmri, step_num
     if type(generated_data_roi_2d) == torch.Tensor:
         generated_data_roi_2d = generated_data_roi_2d.cpu().numpy()
 
+    if type(true_fmri) == torch.Tensor:
+        true_fmri = true_fmri.cpu().numpy()
+
     image_shape = true_fmri.squeeze(1).shape[1:]  # Assuming true_fmri has shape (num_images, H, W) or (num_images, 1, H, W)
 
     print("Generated data shape (before processing):", generated_data_roi_2d.shape)  # Should be (num_images, H, W)
@@ -174,9 +197,6 @@ def get_r_across_images_2d_data(args, generated_data_roi_2d, true_fmri, step_num
     if len(true_fmri.shape) > 2:
         true_fmri = true_fmri.squeeze(1)[:, y_coords, x_coords]
         print("True signal shape after squeezing:", true_fmri.shape)  # Should be (grid_size, grid_size)
-
-    if type(true_fmri) == torch.Tensor:
-        true_fmri = true_fmri.cpu().numpy()
         
     # Calculate Pearson correlation for each location with either mean signal or with true signal
     r_arr = np.array([
