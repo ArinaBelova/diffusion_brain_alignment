@@ -1,3 +1,6 @@
+Currently, the project is still in heavy prototyping phase, so most of up-to-date development is in "inter-subject-experiments" branch.
+This is subject to change in the future.
+
 # To setup an environment to run the code:
 
 1. conda create -n test_brain_alignment python=3.9 
