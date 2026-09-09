@@ -16,7 +16,10 @@ from diffusion_brain.utils.nc_correction import (
     NC_MASKS_PATH_DEFAULT,
     build_brain_map,
     correct_r_by_nc_with_mask,
+    get_intersubject_nc_aligned,
+    get_intersubject_sig_mask_aligned,
     get_nc_perm_aligned,
+    nc_colorbar_vmax,
     per_voxel_r,
 )
 
@@ -119,12 +122,17 @@ def train(train_activations_dataset, train_fmri_dataset, args):
 def _apply_within_subject_nc_correction(
     fmri_predicted_1d, true_fmri_1d, args, y_coords, x_coords, image_shape, step,
 ):
-    """Apply within-subject permutation NC + sig-mask correction and log to wandb.
+    """Apply within- and inter-subject NC correction and log to wandb.
 
-    Mirrors `_evaluate_single_subject_nc_correction` in generate.py: divides
-    per-voxel r by the within-subject NC lower bound for voxels passing the
-    significance mask (loaded from the aggregated permutation pkl). Voxels
-    failing the mask are excluded from the corrected metric.
+    Mirrors `_evaluate_single_subject_nc_correction` in generate.py:
+      - Within-subject: divides per-voxel r by the within-subject NC lower
+        bound for voxels passing the significance mask (loaded from the
+        aggregated permutation pkl). Voxels failing the mask are excluded.
+      - Inter-subject: divides the same per-voxel r by the *inter-subject* NC
+        lower bound (group-level reliability), gated by the inter-subject
+        permutation sig mask. This puts the single-subject Ridge baseline on
+        the same axis as the multi-subject group correction so the two can be
+        compared side-by-side. Logged under `noise_corrected_intersubj/`.
     """
     subj = args.data.subj
     masks_path = getattr(args.data, "nc_masks_path", NC_MASKS_PATH_DEFAULT)
@@ -181,7 +189,8 @@ def _apply_within_subject_nc_correction(
         "noise_corrected/frac_apply": float(n_apply / max(n_total, 1)),
         "noise_corrected/nc_source": nc_source,
         "noise_corrected/r_image": fmri_to_wandb_image(
-            rc_img, title=f"{subj} r/NC (Ridge, step={step})", robust=True,
+            rc_img, title=f"{subj} r/NC (Ridge, step={step})",
+            abs_max=nc_colorbar_vmax(args, [r_corrected]),
         ),
         "noise_corrected/nc_lower_bound_image": fmri_to_wandb_image(
             nc_img,
@@ -193,13 +202,96 @@ def _apply_within_subject_nc_correction(
         "model_step": step,
     })
 
+    # ── Inter-subject NC correction ──
+    # Divide the same per-voxel r by the inter-subject NC lower bound
+    # (group-level reliability), gated by the inter-subject permutation sig
+    # mask. Mirrors the intersubject block in generate.py's single-subject
+    # path so the Ridge baseline lands on the same axis as the multi-subject
+    # group correction.
+    nc_intersubj_pixels, nc_intersubj_source = get_intersubject_nc_aligned(
+        args.data.roi_file, args.data.roi, y_coords, x_coords, args,
+    )
+    intersubj_mask_key = getattr(args.validation, "nc_intersubj_mask_key", "sig_mask")
+    intersubj_sig_mask, intersubj_sig_mask_source = get_intersubject_sig_mask_aligned(
+        args.data.roi_file, args.data.roi, y_coords, x_coords, args,
+        mask_key=intersubj_mask_key,
+    )
+    r_inter_corrected = None
+    inter_apply_mask = None
+    if nc_intersubj_pixels is None:
+        print(
+            "  intersubject NC unavailable — skipping intersubject correction "
+            f"(expected at results/noise_ceiling/noise_ceiling_intersubject_"
+            f"{args.data.roi_file}_{args.data.roi}.npz).",
+            flush=True,
+        )
+    elif len(nc_intersubj_pixels) != len(r_per_voxel):
+        print(
+            "  intersubject NC voxel-count mismatch — skipping intersubject correction.",
+            flush=True,
+        )
+        nc_intersubj_pixels = None
+    else:
+        if intersubj_sig_mask is not None and len(intersubj_sig_mask) == len(r_per_voxel):
+            effective_mask = intersubj_sig_mask
+            mask_label = intersubj_sig_mask_source
+        else:
+            effective_mask = np.ones_like(r_per_voxel, dtype=bool)
+            mask_label = "no sig mask (NC>1e-3 only)"
+        r_inter_corrected, inter_apply_mask = correct_r_by_nc_with_mask(
+            r_per_voxel, nc_intersubj_pixels, effective_mask,
+        )
+        n_inter_apply = int(inter_apply_mask.sum())
+        mean_inter = float(np.nanmean(r_inter_corrected))
+        median_inter = float(np.nanmedian(r_inter_corrected))
+        nc_inter_mean = float(np.nanmean(nc_intersubj_pixels))
+
+        print(f"\n{'=' * 60}", flush=True)
+        print(f"Single-subject intersubject NC correction (Ridge baseline, {subj})", flush=True)
+        print(f"{'=' * 60}", flush=True)
+        print(f"  NC source              : {nc_intersubj_source}", flush=True)
+        print(f"  sig mask               : {mask_label}", flush=True)
+        print(
+            f"  applied to {n_inter_apply}/{len(nc_intersubj_pixels)} voxels",
+            flush=True,
+        )
+        print(f"  raw mean r              = {raw_mean:+.4f}", flush=True)
+        print(f"  mean intersubject NC    = {nc_inter_mean:+.4f}", flush=True)
+        print(f"  mean r/NC (corrected)   = {mean_inter:+.4f}", flush=True)
+        print(f"  median r/NC (corrected) = {median_inter:+.4f}", flush=True)
+        print(f"{'=' * 60}\n", flush=True)
+
+        inter_rc_img = build_brain_map(r_inter_corrected, image_shape, y_coords, x_coords)
+        inter_nc_img = build_brain_map(nc_intersubj_pixels, image_shape, y_coords, x_coords)
+        wandb.log({
+            "noise_corrected_intersubj/mean_r": mean_inter,
+            "noise_corrected_intersubj/median_r": median_inter,
+            "noise_corrected_intersubj/raw_mean_r": raw_mean,
+            "noise_corrected_intersubj/mean_nc_lower_bound": nc_inter_mean,
+            "noise_corrected_intersubj/n_apply_voxels": n_inter_apply,
+            "noise_corrected_intersubj/n_total_voxels": len(nc_intersubj_pixels),
+            "noise_corrected_intersubj/frac_apply": float(
+                n_inter_apply / max(len(nc_intersubj_pixels), 1)
+            ),
+            "noise_corrected_intersubj/nc_source": nc_intersubj_source,
+            "noise_corrected_intersubj/r_image": fmri_to_wandb_image(
+                inter_rc_img,
+                title=f"{subj} r/intersubject-NC (Ridge, step={step})",
+                abs_max=nc_colorbar_vmax(args, [r_inter_corrected]),
+            ),
+            "noise_corrected_intersubj/nc_lower_bound_image": fmri_to_wandb_image(
+                inter_nc_img,
+                title=f"Intersubject NC lower bound — {args.data.roi_file}_{args.data.roi}",
+            ),
+            "model_step": step,
+        })
+
     output_dir = os.path.join(
         getattr(args.validation, "output_folder", "./model_outputs/ann-brain/"),
         str(args.jobid),
     )
     os.makedirs(output_dir, exist_ok=True)
-    np.savez(
-        os.path.join(output_dir, "ridge_single_subject_nc_corrected.npz"),
+    save_dict = dict(
         r_per_voxel=r_per_voxel,
         r_corrected=r_corrected,
         nc_lower_bound=nc_pixels,
@@ -209,6 +301,18 @@ def _apply_within_subject_nc_correction(
         subj=subj,
         roi=args.data.roi,
         roi_file=args.data.roi_file,
+    )
+    if r_inter_corrected is not None:
+        save_dict["r_corrected_intersubj"] = r_inter_corrected
+        save_dict["nc_lower_bound_intersubj"] = nc_intersubj_pixels
+        save_dict["apply_mask_intersubj"] = inter_apply_mask
+        save_dict["nc_source_intersubj"] = nc_intersubj_source
+        if intersubj_sig_mask is not None and len(intersubj_sig_mask) == len(r_per_voxel):
+            save_dict["intersubj_sig_mask"] = intersubj_sig_mask
+            save_dict["intersubj_sig_mask_source"] = intersubj_sig_mask_source
+    np.savez(
+        os.path.join(output_dir, "ridge_single_subject_nc_corrected.npz"),
+        **save_dict,
     )
 
 
@@ -243,7 +347,7 @@ def validate_and_visualise(clf, true_activations_dataset, true_fmri_dataset, arg
         fmri_predicted_2d[:, y_coords, x_coords] = fmri_predicted  # fill in the predicted values at the ROI locations
         get_r_across_images_2d_data(args, fmri_predicted_2d, true_fmri_dataset_copy, step_num=step)
 
-        # Within-subject NC correction (mirrors generate.py single-subject path)
+        # Within- and inter-subject NC correction (mirrors generate.py single-subject path)
         _apply_within_subject_nc_correction(
             fmri_predicted_1d=fmri_predicted,
             true_fmri_1d=true_fmri_dataset,

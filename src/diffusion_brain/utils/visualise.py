@@ -16,7 +16,8 @@ def _attach_model_step(payload, step_num):
     return data
 
 
-def fmri_to_wandb_image(img_2d, title="", robust=False, robust_percentile=99.0):
+def fmri_to_wandb_image(img_2d, title="", robust=False, robust_percentile=99.0,
+                        abs_max=None):
     """Render a 2D fMRI map with diverging RdBu_r colormap and return a wandb.Image.
 
     Parameters
@@ -32,6 +33,13 @@ def fmri_to_wandb_image(img_2d, title="", robust=False, robust_percentile=99.0):
         an outlier r/NC value that otherwise dominates the colormap.
     robust_percentile : float, default 99.0
         Percentile (of |non-zero finite values|) used when ``robust=True``.
+    abs_max : float, optional
+        When given (and > 0), pins the symmetric colour range to
+        ``[-abs_max, +abs_max]``, overriding both the ``robust`` percentile
+        and the absolute-max computation. Out-of-range pixels saturate to the
+        colormap ends (the data is never clipped). Used to give a whole family
+        of NC-corrected maps a single shared colorbar scale so they are
+        directly comparable across subjects/checkpoints.
     """
     from matplotlib.colors import TwoSlopeNorm
     img = np.squeeze(img_2d).astype(np.float64, copy=True)
@@ -39,14 +47,19 @@ def fmri_to_wandb_image(img_2d, title="", robust=False, robust_percentile=99.0):
     # see inf or NaN (e.g. from r / 0 when the inter-subject NC clamped a
     # voxel to 0).
     img[~np.isfinite(img)] = 0.0
-    if robust:
+    # NB: we never clip the data — `TwoSlopeNorm(vmin=-abs_max, vmax=abs_max)`
+    # already saturates out-of-range pixels to the colormap's end colours at
+    # draw time, so the displayed image is identical to clipping while the
+    # underlying values stay untouched.
+    if abs_max is not None and float(abs_max) > 0:
+        abs_max = float(abs_max)
+    elif robust:
         nonzero_abs = np.abs(img[img != 0])
         if nonzero_abs.size > 0:
             abs_max = float(np.percentile(nonzero_abs, robust_percentile))
         else:
             abs_max = 0.0
         abs_max = max(abs_max, 1e-8)
-        img = np.clip(img, -abs_max, abs_max)
     else:
         abs_max = max(abs(img.min()), abs(img.max()), 1e-8)
     fig, ax = plt.subplots()

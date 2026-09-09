@@ -24,6 +24,7 @@ from diffusion_brain.utils.nc_correction import (
     correct_r_by_nc_with_mask,
     get_intersubject_sig_mask_aligned,
     get_nc_perm_aligned,
+    nc_colorbar_vmax,
     per_voxel_r,
 )
 
@@ -235,8 +236,13 @@ def _evaluate_per_subject_and_group(
     nc_intersubj_pixels = None
     nc_intersubj_source = None
     per_subject_r_corrected_intersubj = {}
+    per_subject_r_corrected_within = {}
     intersubj_sig_mask = None
     intersubj_sig_mask_source = None
+    # Shared colorbar bound for the intersubject family (per-subject intersubject
+    # maps + the group map). Set once after the per-subject loop, reused for the
+    # group map so all intersubject corrections render on one scale.
+    inter_vmax = None
     if args.data.is_2d and y_coords_ref is not None:
         nc_intersubj_pixels, nc_intersubj_source = _load_noise_ceiling_2d_pixels(
             args, y_coords_ref, x_coords_ref, mode="intersubject",
@@ -256,6 +262,11 @@ def _evaluate_per_subject_and_group(
         print("Per-subject noise-ceiling-corrected r-scores (within-subject NC)", flush=True)
         print(f"{'=' * 60}", flush=True)
 
+        # Pass 1: compute every subject's within-subject r/NC and stage its
+        # wandb payload (scalars + NC-lower-bound / sig-mask images). The r/NC
+        # map itself is deferred to pass 2 so all subjects can share one
+        # colorbar scale (one bound per correction type).
+        within_pending = []  # list of (nc_log_dict, r_corrected, subj_name)
         for subj_idx, r_arr in zip(unique_ids, per_subject_r):
             subj_name = (
                 ALL_SUBJECTS[subj_idx]
@@ -290,6 +301,7 @@ def _evaluate_per_subject_and_group(
             r_corrected, apply_mask = correct_r_by_nc_with_mask(
                 r_arr, nc_subj_pixels, sig_mask_subj,
             )
+            per_subject_r_corrected_within[subj_name] = r_corrected
             n_apply = int(apply_mask.sum())
             mean_rc = float(np.nanmean(r_corrected))
             median_rc = float(np.nanmedian(r_corrected))
@@ -309,16 +321,8 @@ def _evaluate_per_subject_and_group(
                 "model_step": step_num,
             }
             if image_shape_ref is not None:
-                rc_img = build_brain_map(
-                    r_corrected, image_shape_ref, y_coords_ref, x_coords_ref,
-                )
                 nc_subj_img = build_brain_map(
                     nc_subj_pixels, image_shape_ref, y_coords_ref, x_coords_ref,
-                )
-                nc_log[f"noise_corrected/{subj_name}/r_image"] = fmri_to_wandb_image(
-                    rc_img,
-                    title=f"{subj_name} r/within-subject-NC ({model_name})",
-                    robust=True,
                 )
                 nc_log[f"noise_corrected/{subj_name}/nc_lower_bound_image"] = fmri_to_wandb_image(
                     nc_subj_img,
@@ -334,6 +338,21 @@ def _evaluate_per_subject_and_group(
                         title=f"{subj_name} within-subject sig mask",
                     )
 
+            within_pending.append((nc_log, r_corrected, subj_name))
+
+        # Pass 2: shared colorbar bound across all within-subject r/NC maps,
+        # then render + log each with the same `abs_max`.
+        within_vmax = nc_colorbar_vmax(args, [rc for _, rc, _ in within_pending])
+        for nc_log, r_corrected, subj_name in within_pending:
+            if image_shape_ref is not None:
+                rc_img = build_brain_map(
+                    r_corrected, image_shape_ref, y_coords_ref, x_coords_ref,
+                )
+                nc_log[f"noise_corrected/{subj_name}/r_image"] = fmri_to_wandb_image(
+                    rc_img,
+                    title=f"{subj_name} r/within-subject-NC ({model_name})",
+                    abs_max=within_vmax,
+                )
             wandb.log(nc_log)
 
         # Per-subject intersubject NC correction — divide each subject's
@@ -358,6 +377,10 @@ def _evaluate_per_subject_and_group(
                     flush=True,
                 )
             print(f"{'=' * 60}", flush=True)
+            # Pass 1: compute every subject's intersubject r/NC and stage its
+            # scalar payload; defer the r/NC image so all subjects (and the
+            # group map below) share one colorbar scale.
+            inter_pending = []  # list of (inter_log, r_inter_corrected, subj_name)
             for subj_idx, r_arr in zip(unique_ids, per_subject_r):
                 subj_name = (
                     ALL_SUBJECTS[subj_idx]
@@ -394,16 +417,25 @@ def _evaluate_per_subject_and_group(
                     f"noise_corrected_intersubj/{subj_name}/nc_source": nc_intersubj_source,
                     "model_step": step_num,
                 }
-                if image_shape_ref is not None:
-                    inter_img = build_brain_map(
-                        r_inter_corrected, image_shape_ref, y_coords_ref, x_coords_ref,
-                    )
-                    inter_log[f"noise_corrected_intersubj/{subj_name}/r_image"] = fmri_to_wandb_image(
-                        inter_img,
-                        title=f"{subj_name} r/intersubject-NC ({model_name})",
-                        robust=True,
-                    )
-                wandb.log(inter_log)
+                inter_pending.append((inter_log, r_inter_corrected, subj_name))
+
+            # Pass 2: shared colorbar bound across all intersubject r/NC maps.
+            # The group map (logged later) reuses this same `inter_vmax`.
+            if inter_pending:
+                inter_vmax = nc_colorbar_vmax(
+                    args, [r for _, r, _ in inter_pending]
+                )
+                for inter_log, r_inter_corrected, subj_name in inter_pending:
+                    if image_shape_ref is not None:
+                        inter_img = build_brain_map(
+                            r_inter_corrected, image_shape_ref, y_coords_ref, x_coords_ref,
+                        )
+                        inter_log[f"noise_corrected_intersubj/{subj_name}/r_image"] = fmri_to_wandb_image(
+                            inter_img,
+                            title=f"{subj_name} r/intersubject-NC ({model_name})",
+                            abs_max=inter_vmax,
+                        )
+                    wandb.log(inter_log)
 
         if nc_intersubj_pixels is None:
             print(
@@ -540,6 +572,12 @@ def _evaluate_per_subject_and_group(
                 nc_intersubj_pixels, image_shape_ref, y_coords_ref, x_coords_ref,
             )
 
+            # Same colorbar as the per-subject intersubject maps. Reuse the
+            # bound set in the per-subject loop; if that loop produced no maps
+            # (e.g. all voxel-count mismatched), derive it from the group map.
+            group_vmax = inter_vmax if inter_vmax is not None else nc_colorbar_vmax(
+                args, [group_r_corrected]
+            )
             wandb.log({
                 "noise_corrected/r_image_significant": fmri_to_wandb_image(
                     group_rc_img_sig,
@@ -547,7 +585,7 @@ def _evaluate_per_subject_and_group(
                         f"Group r/NC (BH-FDR q<{FDR_ALPHA}, "
                         f"{n_apply_group}/{n_voxels} applied) — {model_name}"
                     ),
-                    robust=True,
+                    abs_max=group_vmax,
                 ),
                 "noise_corrected/nc_lower_bound_image": fmri_to_wandb_image(
                     nc_img,
@@ -581,21 +619,36 @@ def _evaluate_per_subject_and_group(
             save_dict["nc_lower_bound"] = nc_intersubj_pixels
             save_dict["group_mean_r_corrected"] = group_r_corrected
             save_dict["group_apply_mask"] = apply_mask_group
-        if per_subject_r_corrected_intersubj:
-            # Stack in the same `unique_ids` order as `all_r` so rows align.
-            subj_name_order = [
-                ALL_SUBJECTS[i] if 0 <= i < len(ALL_SUBJECTS) else f"subj_id_{i}"
-                for i in unique_ids
-            ]
-            rows = []
-            kept_names = []
+        # Per-subject corrected r matrices, stacked in the same `unique_ids`
+        # order as `all_r` so rows align across all saved arrays.
+        subj_name_order = [
+            ALL_SUBJECTS[i] if 0 <= i < len(ALL_SUBJECTS) else f"subj_id_{i}"
+            for i in unique_ids
+        ]
+
+        def _stack_per_subject(corrected_dict):
+            rows, kept_names = [], []
             for name in subj_name_order:
-                if name in per_subject_r_corrected_intersubj:
-                    rows.append(per_subject_r_corrected_intersubj[name])
+                if name in corrected_dict:
+                    rows.append(corrected_dict[name])
                     kept_names.append(name)
             if rows and {len(r) for r in rows} == {n_voxels}:
-                save_dict["per_subject_r_corrected_intersubj"] = np.stack(rows, axis=0)
-                save_dict["per_subject_r_corrected_intersubj_subjects"] = np.array(kept_names)
+                return np.stack(rows, axis=0), np.array(kept_names)
+            return None, None
+
+        intersubj_stack, intersubj_stack_names = _stack_per_subject(
+            per_subject_r_corrected_intersubj
+        )
+        if intersubj_stack is not None:
+            save_dict["per_subject_r_corrected_intersubj"] = intersubj_stack
+            save_dict["per_subject_r_corrected_intersubj_subjects"] = intersubj_stack_names
+
+        within_stack, within_stack_names = _stack_per_subject(
+            per_subject_r_corrected_within
+        )
+        if within_stack is not None:
+            save_dict["per_subject_r_corrected_within"] = within_stack
+            save_dict["per_subject_r_corrected_within_subjects"] = within_stack_names
         if intersubj_sig_mask is not None and len(intersubj_sig_mask) == n_voxels:
             save_dict["intersubj_sig_mask"] = intersubj_sig_mask
             save_dict["intersubj_sig_mask_source"] = intersubj_sig_mask_source
@@ -715,7 +768,8 @@ def _evaluate_single_subject_nc_correction(
         "noise_corrected/frac_apply": float(n_apply / max(n_total, 1)),
         "noise_corrected/nc_source": nc_source,
         "noise_corrected/r_image": fmri_to_wandb_image(
-            rc_img, title=f"{subj} r/NC ({model_name})", robust=True,
+            rc_img, title=f"{subj} r/NC ({model_name})",
+            abs_max=nc_colorbar_vmax(args, [r_corrected]),
         ),
         "noise_corrected/nc_lower_bound_image": fmri_to_wandb_image(
             nc_img,
@@ -811,7 +865,7 @@ def _evaluate_single_subject_nc_correction(
             "noise_corrected_intersubj/r_image": fmri_to_wandb_image(
                 inter_rc_img,
                 title=f"{subj} r/intersubject-NC ({model_name})",
-                robust=True,
+                abs_max=nc_colorbar_vmax(args, [r_inter_corrected]),
             ),
             "noise_corrected_intersubj/nc_lower_bound_image": fmri_to_wandb_image(
                 inter_nc_img,

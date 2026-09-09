@@ -487,6 +487,10 @@ def main():
             "group_apply_mask",
             "per_subject_r_corrected_intersubj",
             "per_subject_r_corrected_intersubj_subjects",
+            "per_subject_r_corrected_within",
+            "per_subject_r_corrected_within_subjects",
+            "intersubj_sig_mask",
+            "intersubj_sig_mask_source",
         ):
             if k in nc_results:
                 save_dict[k] = nc_results[k]
